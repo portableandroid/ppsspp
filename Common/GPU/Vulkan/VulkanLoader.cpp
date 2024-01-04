@@ -32,10 +32,13 @@
 #include <dlfcn.h>
 #endif
 
+#ifndef PORTANDROID
+// workaround for missing symbols on Android ARM64.
 #if PPSSPP_PLATFORM(ANDROID) && PPSSPP_ARCH(ARM64)
 #include "File/AndroidStorage.h"
 
 #include <adrenotools/driver.h>
+#endif
 #endif
 
 namespace PPSSPP_VK {
@@ -298,7 +301,7 @@ static VulkanLibraryHandle VulkanLoadLibrary(const char *logname) {
 	return LoadLibrary(L"vulkan-1.dll");
 #else
 	void *lib = nullptr;
-
+/* //Godwin: workaround for missing symbols on Android ARM64.
 #if PPSSPP_PLATFORM(ANDROID) && PPSSPP_ARCH(ARM64)
     if (!g_Config.customDriver.empty() && g_Config.customDriver != "Default") {
         const Path driverPath = g_Config.internalDataDirectory / "drivers" / g_Config.customDriver;
@@ -321,7 +324,7 @@ static VulkanLibraryHandle VulkanLoadLibrary(const char *logname) {
         }
     }
 #endif
-
+*/
     if (!lib) {
         ERROR_LOG(G3D, "Failed to load custom driver");
         for (int i = 0; i < ARRAY_SIZE(so_names); i++) {

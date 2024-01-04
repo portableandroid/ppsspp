@@ -1009,8 +1009,8 @@ ifneq (,$(findstring $(GIT_VERSION),$(shell grep -s char $(GIT_VERSION_SRC))))
 endif
 
 ifneq ($(GIT_VERSION_NO_UPDATE),1)
-   $(shell echo 'const char *PPSSPP_GIT_VERSION = "${GIT_VERSION}";' > $(GIT_VERSION_SRC))
-   $(shell echo '#define PPSSPP_GIT_VERSION_NO_UPDATE 0' >> $(GIT_VERSION_SRC))
+   $(shell echo const char *PPSSPP_GIT_VERSION = "${GIT_VERSION}"; > $(GIT_VERSION_SRC))
+   $(shell echo #define PPSSPP_GIT_VERSION_NO_UPDATE 0 >> $(GIT_VERSION_SRC))
 endif
 
 SOURCES_CXX += $(GIT_VERSION_SRC)

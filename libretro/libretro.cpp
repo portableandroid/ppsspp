@@ -52,6 +52,10 @@
 #include "libretro/LibretroGraphicsContext.h"
 #include "libretro/libretro_core_options.h"
 
+#ifdef PORTANDROID
+#include "emu_retro.h"
+#endif
+
 #if PPSSPP_PLATFORM(ANDROID)
 #include <sys/system_properties.h>
 #endif
@@ -1715,6 +1719,9 @@ inline int16_t Clamp16(int32_t sample) {
 }
 
 void System_AudioPushSamples(const int32_t *audio, int numSamples) {
+#ifdef PORTANDROID
+    cb_itf.cb_frame_audio_partial_update((void *)audio, numSamples, 32);
+#else
    // Convert to 16-bit audio for further processing.
    int16_t buffer[1024 * 2];
    while (numSamples > 0) {
@@ -1732,6 +1739,7 @@ void System_AudioPushSamples(const int32_t *audio, int numSamples) {
       }
       numSamples -= blockSize;
    }
+#endif
 }
 
 void System_AudioGetDebugStats(char *buf, size_t bufSize) { if (buf) buf[0] = '\0'; }

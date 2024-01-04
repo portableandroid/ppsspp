@@ -588,8 +588,11 @@ static const ConfigSetting graphicsSettings[] = {
 	ConfigSetting("CardboardYShift", &g_Config.iCardboardYShift, 0, CfgFlag::PER_GAME),
 	ConfigSetting("iShowStatusFlags", &g_Config.iShowStatusFlags, 0, CfgFlag::PER_GAME),
 	ConfigSetting("GraphicsBackend", &g_Config.iGPUBackend, &DefaultGPUBackend, &GPUBackendTranslator::To, &GPUBackendTranslator::From, CfgFlag::DEFAULT | CfgFlag::REPORT),
+#ifndef PORTANDROID
+//Godwin: workaround for missing symbols on Android ARM64.
 #if PPSSPP_PLATFORM(ANDROID) && PPSSPP_ARCH(ARM64)
     ConfigSetting("CustomDriver", &g_Config.customDriver, "", CfgFlag::DEFAULT),
+#endif
 #endif
 	ConfigSetting("FailedGraphicsBackends", &g_Config.sFailedGPUBackends, "", CfgFlag::DEFAULT),
 	ConfigSetting("DisabledGraphicsBackends", &g_Config.sDisabledGPUBackends, "", CfgFlag::DEFAULT),
