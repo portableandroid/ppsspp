@@ -262,6 +262,7 @@ void ControlMappingScreen::CreateViews() {
 		return UI::EVENT_DONE;
 	});
 	leftColumn->Add(new CheckBox(&g_Config.bAllowMappingCombos, km->T("Allow combo mappings")));
+	leftColumn->Add(new CheckBox(&g_Config.bStrictComboOrder, km->T("Strict combo input order")));
 
 	leftColumn->Add(new Spacer(new LinearLayoutParams(1.0f)));
 	AddStandardBack(leftColumn);
@@ -274,13 +275,41 @@ void ControlMappingScreen::CreateViews() {
 	root_->Add(leftColumn);
 	root_->Add(rightScroll_);
 
-	std::vector<KeyMap::KeyMap_IntStrPair> mappableKeys = KeyMap::GetMappableKeys();
-	for (size_t i = 0; i < mappableKeys.size(); i++) {
-		SingleControlMapper *mapper = rightColumn->Add(
+	size_t numMappableKeys = 0;
+	const KeyMap::KeyMap_IntStrPair *mappableKeys = KeyMap::GetMappableKeys(&numMappableKeys);
+
+	struct Cat {
+		const char *catName;
+		int firstKey;
+		bool *open;
+	};
+	// Category name, first input from psp_button_names.
+	static const Cat cats[] = {
+		{"Standard PSP controls", CTRL_UP, &categoryToggles_[0]},
+		{"Control modifiers", VIRTKEY_ANALOG_ROTATE_CW, &categoryToggles_[1]},
+		{"Emulator controls", VIRTKEY_FASTFORWARD, &categoryToggles_[2]},
+		{"Extended PSP controls", VIRTKEY_AXIS_RIGHT_Y_MAX, &categoryToggles_[3]},
+	};
+
+	int curCat = -1;
+	CollapsibleSection *curSection = nullptr;
+	for (size_t i = 0; i < numMappableKeys; i++) {
+		if (curCat < (int)ARRAY_SIZE(cats) && mappableKeys[i].key == cats[curCat + 1].firstKey) {
+			if (curCat >= 0) {
+				curSection->SetOpenPtr(cats[curCat].open);
+			}
+			curCat++;
+			curSection = rightColumn->Add(new CollapsibleSection(km->T(cats[curCat].catName)));
+			curSection->SetSpacing(6.0f);
+		}
+		SingleControlMapper *mapper = curSection->Add(
 			new SingleControlMapper(mappableKeys[i].key, mappableKeys[i].name, screenManager(),
 				                    new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 		mapper->SetTag(StringFromFormat("KeyMap%s", mappableKeys[i].name));
 		mappers_.push_back(mapper);
+	}
+	if (curCat >= 0 && curSection) {
+		curSection->SetOpenPtr(cats[curCat].open);
 	}
 
 	keyMapGeneration_ = KeyMap::g_controllerMapGeneration;
@@ -324,7 +353,7 @@ void KeyMappingNewKeyDialog::CreatePopupContents(UI::ViewGroup *parent) {
 
 	std::string pspButtonName = KeyMap::GetPspButtonName(this->pspBtn_);
 
-	parent->Add(new TextView(std::string(km->T("Map a new key for")) + " " + mc->T(pspButtonName), new LinearLayoutParams(Margins(10, 0))));
+	parent->Add(new TextView(std::string(km->T("Map a new key for")) + " " + std::string(mc->T(pspButtonName)), new LinearLayoutParams(Margins(10, 0))));
 	parent->Add(new TextView(std::string(mapping_.ToVisualString()), new LinearLayoutParams(Margins(10, 0))));
 
 	comboMappingsNotEnabled_ = parent->Add(new NoticeView(NoticeLevel::WARN, km->T("Combo mappings are not enabled"), "", new LinearLayoutParams(Margins(10, 0))));
@@ -403,15 +432,19 @@ bool KeyMappingNewMouseKeyDialog::key(const KeyInput &key) {
 
 		mapped_ = true;
 
-		MultiInputMapping kdf(InputMapping(key.deviceId, key.keyCode));
-
 		TriggerFinish(DR_YES);
 		g_Config.bMapMouse = false;
-		if (callback_)
+		if (callback_) {
+			MultiInputMapping kdf(InputMapping(key.deviceId, key.keyCode));
 			callback_(kdf);
+		}
 	}
 	return true;
 }
+
+// Only used during the bind process. In other places, it's configurable for some types of axis, like trigger.
+const float AXIS_BIND_THRESHOLD = 0.75f;
+const float AXIS_BIND_RELEASE_THRESHOLD = 0.35f;  // Used during mapping only to detect a "key-up" reliably.
 
 void KeyMappingNewKeyDialog::axis(const AxisInput &axis) {
 	if (time_now_d() < delayUntil_)
@@ -423,7 +456,8 @@ void KeyMappingNewKeyDialog::axis(const AxisInput &axis) {
 		InputMapping mapping(axis.deviceId, axis.axisId, 1);
 		triggeredAxes_.insert(mapping);
 		if (!g_Config.bAllowMappingCombos && !mapping_.mappings.empty()) {
-			comboMappingsNotEnabled_->SetVisibility(UI::V_VISIBLE);
+			if (mapping_.mappings.size() == 1 && mapping != mapping_.mappings[0])
+				comboMappingsNotEnabled_->SetVisibility(UI::V_VISIBLE);
 		} else if (!mapping_.mappings.contains(mapping)) {
 			mapping_.mappings.push_back(mapping);
 			RecreateViews();
@@ -432,7 +466,8 @@ void KeyMappingNewKeyDialog::axis(const AxisInput &axis) {
 		InputMapping mapping(axis.deviceId, axis.axisId, -1);
 		triggeredAxes_.insert(mapping);
 		if (!g_Config.bAllowMappingCombos && !mapping_.mappings.empty()) {
-			comboMappingsNotEnabled_->SetVisibility(UI::V_VISIBLE);
+			if (mapping_.mappings.size() == 1 && mapping != mapping_.mappings[0])
+				comboMappingsNotEnabled_->SetVisibility(UI::V_VISIBLE);
 		} else if (!mapping_.mappings.contains(mapping)) {
 			mapping_.mappings.push_back(mapping);
 			RecreateViews();
@@ -455,18 +490,20 @@ void KeyMappingNewMouseKeyDialog::axis(const AxisInput &axis) {
 
 	if (axis.value > AXIS_BIND_THRESHOLD) {
 		mapped_ = true;
-		MultiInputMapping kdf(InputMapping(axis.deviceId, axis.axisId, 1));
 		TriggerFinish(DR_YES);
-		if (callback_)
+		if (callback_) {
+			MultiInputMapping kdf(InputMapping(axis.deviceId, axis.axisId, 1));
 			callback_(kdf);
+		}
 	}
 
 	if (axis.value < -AXIS_BIND_THRESHOLD) {
 		mapped_ = true;
-		MultiInputMapping kdf(InputMapping(axis.deviceId, axis.axisId, -1));
 		TriggerFinish(DR_YES);
-		if (callback_)
+		if (callback_) {
+			MultiInputMapping kdf(InputMapping(axis.deviceId, axis.axisId, -1));
 			callback_(kdf);
+		}
 	}
 }
 

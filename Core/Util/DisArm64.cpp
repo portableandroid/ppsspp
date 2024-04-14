@@ -23,6 +23,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <array>
 
 #include "Common/Arm64Emitter.h"
 #include "Common/StringUtils.h"
@@ -496,7 +497,7 @@ static void DataProcessingRegister(uint32_t w, uint64_t addr, Instruction *instr
 		int op31 = (w >> 21) & 0x7;
 		int o0 = (w >> 15) & 1;
 		int Ra = (w >> 10) & 0x1f;
-		const char *opnames[8] = { 0, 0, "maddl", "msubl", "smulh", 0, 0, 0 };
+		static constexpr std::array<const char*, 8> opnames = { 0, 0, "maddl", "msubl", "smulh", 0, 0, 0 };
 
 		if (op31 == 0) {
 			// madd/msub supports both 32-bit and 64-bit modes
@@ -915,8 +916,6 @@ static void FPandASIMD2(uint32_t w, uint64_t addr, Instruction *instr) {
 			} else if (((w >> 10) & 0x3f) == 0x0 && opcode == 0) {
 				char ir = sf ? 'x' : 'w';
 				char roundmode = "npmz"[(w >> 19) & 3];
-				if (opcode & 0x4)
-					roundmode = 'a';
 				char fr = ((w >> 22) & 1) ? 'd' : 's';
 				snprintf(instr->text, sizeof(instr->text), "fcvt%cs %c%d, %c%d", roundmode, ir, Rd, fr, Rn);
 			} else if ((opcode & 6) == 2) {

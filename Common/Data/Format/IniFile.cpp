@@ -193,7 +193,7 @@ bool Section::GetKeys(std::vector<std::string> &keys) const {
 	keys.clear();
 	for (auto liter = lines_.begin(); liter != lines_.end(); ++liter) {
 		if (!liter->Key().empty())
-			keys.push_back(std::string(liter->Key()));
+			keys.emplace_back(liter->Key());
 	}
 	return true;
 }
@@ -215,24 +215,34 @@ const ParsedIniLine *Section::GetLine(const char* key) const {
 }
 
 void Section::Set(const char* key, uint32_t newValue) {
-	Set(key, StringFromFormat("0x%08x", newValue).c_str());
+	char temp[128];
+	snprintf(temp, sizeof(temp), "0x%08x", newValue);
+	Set(key, (const char *)temp);
 }
 
 void Section::Set(const char* key, uint64_t newValue) {
-	Set(key, StringFromFormat("0x%016" PRIx64, newValue).c_str());
+	char temp[128];
+	snprintf(temp, sizeof(temp), "0x%016" PRIx64, newValue);
+	Set(key, (const char *)temp);
 }
 
 void Section::Set(const char* key, float newValue) {
 	_dbg_assert_(!my_isnanorinf(newValue));
-	Set(key, StringFromFormat("%f", newValue).c_str());
+	char temp[128];
+	snprintf(temp, sizeof(temp), "%f", newValue);
+	Set(key, (const char *)temp);
 }
 
 void Section::Set(const char* key, double newValue) {
-	Set(key, StringFromFormat("%f", newValue).c_str());
+	char temp[128];
+	snprintf(temp, sizeof(temp), "%f", newValue);
+	Set(key, (const char *)temp);
 }
 
 void Section::Set(const char* key, int newValue) {
-	Set(key, StringFromInt(newValue).c_str());
+	char temp[128];
+	snprintf(temp, sizeof(temp), "%d", newValue);
+	Set(key, (const char *)temp);
 }
 
 void Section::Set(const char* key, const char* newValue) {
@@ -318,20 +328,20 @@ bool Section::Get(const char* key, std::vector<std::string>& values) const
 		return false;
 	}
 	// ignore starting , if any
-	size_t subStart = temp.find_first_not_of(",");
+	size_t subStart = temp.find_first_not_of(',');
 	size_t subEnd;
 
 	// split by , 
 	while (subStart != std::string::npos) {
 		
 		// Find next , 
-		subEnd = temp.find_first_of(",", subStart);
+		subEnd = temp.find_first_of(',', subStart);
 		if (subStart != subEnd) 
 			// take from first char until next , 
 			values.push_back(StripSpaces(temp.substr(subStart, subEnd - subStart)));
 	
 		// Find the next non , char
-		subStart = temp.find_first_not_of(",", subEnd);
+		subStart = temp.find_first_not_of(',', subEnd);
 	} 
 	
 	return true;
@@ -507,7 +517,7 @@ bool IniFile::Load(const Path &path)
 
 	// Open file
 	std::string data;
-	if (!File::ReadFileToString(true, path, data)) {
+	if (!File::ReadTextFileToString(path, &data)) {
 		return false;
 	}
 	std::stringstream sstream(data);

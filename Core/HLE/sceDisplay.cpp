@@ -109,7 +109,7 @@ static bool flippedThisFrame;
 static int framerate = 60;
 
 // 1.001f to compensate for the classic 59.94 NTSC framerate that the PSP seems to have.
-static double timePerVblank = 1.001f / (float)framerate;
+static double timePerVblank = 1.001 / framerate;
 
 // Don't include this in the state, time increases regardless of state.
 static double curFrameTime;
@@ -391,7 +391,7 @@ static void DoFrameDropLogging(float scaledTimestep) {
 
 // All the throttling and frameskipping logic is here.
 // This is called just before we drop out of the main loop, in order to allow the submit and present to happen.
-static void DoFrameTiming(bool throttle, bool *skipFrame, float scaledTimestep) {
+static void DoFrameTiming(bool throttle, bool *skipFrame, float scaledTimestep, bool endOfFrame) {
 	PROFILE_THIS_SCOPE("timing");
 	*skipFrame = false;
 
@@ -438,16 +438,15 @@ static void DoFrameTiming(bool throttle, bool *skipFrame, float scaledTimestep) 
 			nextFrameTime = curFrameTime;
 		} else {
 			// Wait until we've caught up.
-			while (time_now_d() < nextFrameTime) {
-#ifdef _WIN32
-				sleep_ms(1); // Sleep for 1ms on this thread
-#else
-				const double left = nextFrameTime - curFrameTime;
-				usleep((long)(left * 1000000));
-#endif
+			// If we're ending the frame here, we'll defer the sleep until after the command buffers
+			// have been handed off to the render thread, for some more overlap.
+			if (endOfFrame) {
+				g_frameTiming.DeferWaitUntil(nextFrameTime, &curFrameTime);
+			} else {
+				WaitUntil(curFrameTime, nextFrameTime);
+				curFrameTime = time_now_d();  // I guess we could also just set it to nextFrameTime...
 			}
 		}
-		curFrameTime = time_now_d();
 	}
 
 	lastFrameTime = nextFrameTime;
@@ -463,7 +462,7 @@ static void DoFrameIdleTiming() {
 	double before = time_now_d();
 	double dist = before - lastFrameTime;
 	// Ignore if the distance is just crazy.  May mean wrap or pause.
-	if (dist < 0.0 || dist >= 15 * timePerVblank) {
+	if (dist < 0.0 || dist >= 15.0 * timePerVblank) {
 		return;
 	}
 
@@ -485,7 +484,9 @@ static void DoFrameIdleTiming() {
 			sleep_ms(1);
 #else
 			const double left = goal - cur_time;
-			usleep((long)(left * 1000000));
+			if (left > 0.0f && left < 1.0f) {  // Sanity check
+				usleep((long)(left * 1000000));
+			}
 #endif
 		}
 
@@ -497,9 +498,6 @@ static void DoFrameIdleTiming() {
 
 void hleEnterVblank(u64 userdata, int cyclesLate) {
 	int vbCount = userdata;
-
-	// This should be a good place to do it. Should happen once per vblank. Here or in leave? Not sure it matters much.
-	Achievements::FrameUpdate();
 
 	VERBOSE_LOG(SCEDISPLAY, "Enter VBlank %i", vbCount);
 
@@ -637,9 +635,14 @@ void __DisplayFlip(int cyclesLate) {
 
 	// Setting CORE_NEXTFRAME (which Core_NextFrame does) causes a swap.
 	const bool fbReallyDirty = gpu->FramebufferReallyDirty();
+
+	bool nextFrame = false;
+
 	if (fbReallyDirty || noRecentFlip || postEffectRequiresFlip) {
 		// Check first though, might've just quit / been paused.
-		if (!forceNoFlip && Core_NextFrame()) {
+		if (!forceNoFlip)
+			nextFrame = Core_NextFrame();
+		if (nextFrame) {
 			gpu->CopyDisplayToOutput(fbReallyDirty);
 			if (fbReallyDirty) {
 				DisplayFireActualFlip();
@@ -659,7 +662,7 @@ void __DisplayFlip(int cyclesLate) {
 		scaledTimestep *= (float)framerate / fpsLimit;
 	}
 	bool skipFrame;
-	DoFrameTiming(throttle, &skipFrame, scaledTimestep);
+	DoFrameTiming(throttle, &skipFrame, scaledTimestep, nextFrame);
 
 	int maxFrameskip = 8;
 	int frameSkipNum = DisplayCalculateFrameSkip();
@@ -739,7 +742,9 @@ void hleLagSync(u64 userdata, int cyclesLate) {
 		// Tight loop on win32 - intentionally, as timing is otherwise not precise enough.
 #ifndef _WIN32
 		const double left = goal - now;
-		usleep((long)(left * 1000000.0));
+		if (left > 0.0f && left < 1.0f) {  // Sanity check
+			usleep((long)(left * 1000000.0));
+		}
 #else
 		yield();
 #endif
@@ -1123,6 +1128,6 @@ void Register_sceDisplay_driver() {
 
 void __DisplaySetFramerate(int value) {
 	framerate = value;
-	timePerVblank = 1.001f / (float)framerate;
+	timePerVblank = 1.001 / (double)framerate;
 	frameMs = 1001.0 / (double)framerate;
 }

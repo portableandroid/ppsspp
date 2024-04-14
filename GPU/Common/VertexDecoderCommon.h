@@ -342,7 +342,7 @@ public:
 
 	int VertexSize() const { return size; }  // PSP format size
 
-	std::string GetString(DebugShaderStringType stringType);
+	std::string GetString(DebugShaderStringType stringType) const;
 
 	void Step_WeightsU8() const;
 	void Step_WeightsU16() const;
@@ -431,7 +431,11 @@ public:
 	// output must be big for safety.
 	// Returns number of chars written.
 	// Ugly for speed.
-	int ToString(char *output) const;
+	int ToString(char *output, bool spaces) const;
+
+	bool IsInSpace(const uint8_t *ptr) const {
+		return ptr >= (const uint8_t *)jitted_ && ptr < ((const uint8_t *)jitted_ + jittedSize_);
+	}
 
 	// Mutable decoder state
 	mutable u8 *decoded_ = nullptr;
@@ -507,6 +511,7 @@ public:
 
 	// Returns a pointer to the code to run.
 	JittedVertexDecoder Compile(const VertexDecoder &dec, int32_t *jittedSize);
+	bool DescribeCodePtr(const u8 *ptr, std::string &name) const;
 	void Clear();
 
 	void Jit_WeightsU8();

@@ -158,7 +158,7 @@ public:
 
 	void Execute_Unknown(u32 op, u32 diff);
 
-	int EstimatePerVertexCost();
+	static int EstimatePerVertexCost();
 
 	// Note: Not virtual!
 	void Flush();
@@ -203,8 +203,6 @@ public:
 	u32 GetIndexAddress() override;
 	GPUgstate GetGState() override;
 	void SetCmdValue(u32 op) override;
-
-	void UpdateUVScaleOffset();
 
 	DisplayList* getList(int listid) override {
 		return &dls[listid];
