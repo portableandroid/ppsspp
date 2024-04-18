@@ -916,12 +916,35 @@ static void check_variables(CoreParameter &coreParam)
          g_Config.bForcedFirstConnect = true;
    }
 
+#ifdef PORTANDROID
+    var.key = "ppsspp_change_mac_address";
+    g_Config.sMACAddress = "";
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    {
+        g_Config.sMACAddress = var.value;
+    }
+
+
+    if (changeProAdhocServer == "IP address") {
+        var.key = "ppsspp_pro_ad_hoc_server_address";
+        g_Config.proAdhocServer = "";
+        if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        {
+            g_Config.proAdhocServer = var.value;
+        }
+
+    }else{
+        g_Config.proAdhocServer = changeProAdhocServer;
+    }
+
+#else
    std::string ppsspp_change_mac_address[12];
    int ppsspp_pro_ad_hoc_ipv4[12];
    char key[64] = {0};
    var.key = key;
    g_Config.sMACAddress = "";
    g_Config.proAdhocServer = "";
+
    for (int i = 0; i < 12; i++)
    {
       snprintf(key, sizeof(key), "ppsspp_change_mac_address%02d", i + 1);
@@ -953,6 +976,7 @@ static void check_variables(CoreParameter &coreParam)
       }
    }
 
+
    if (changeProAdhocServer == "IP address")
    {
       g_Config.proAdhocServer = "";
@@ -975,6 +999,8 @@ static void check_variables(CoreParameter &coreParam)
    }
    else
       g_Config.proAdhocServer = changeProAdhocServer;
+
+#endif
 
    g_Config.bTexHardwareScaling = g_Config.sTextureShaderName != "Off";
 
