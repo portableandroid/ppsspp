@@ -1325,7 +1325,10 @@ bool retro_load_game(const struct retro_game_info *game)
       ERROR_LOG(BOOT, "%s", error_string.c_str());
       return false;
    }
-
+#ifdef PORTANDROID
+    //Set CD ID and label
+    cb_itf.cb_rom_info_set(NULL, g_paramSFO.GetDiscID().c_str(), 0);
+#endif
    struct retro_core_option_display option_display;
 
    // Show/hide 'MSAA' and 'Texture Shader' options, Vulkan only
