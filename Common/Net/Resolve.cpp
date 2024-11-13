@@ -1,9 +1,9 @@
 #include "ppsspp_config.h"
 #include "Common/Net/Resolve.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -71,6 +71,7 @@ void Shutdown()
 #endif
 }
 
+// NOTE: Due to the nature of getaddrinfo, this can block indefinitely. Not good.
 bool DNSResolve(const std::string &host, const std::string &service, addrinfo **res, std::string &error, DNSType type) {
 #if PPSSPP_PLATFORM(SWITCH)
 	// Force IPv4 lookups.
@@ -98,7 +99,7 @@ bool DNSResolve(const std::string &host, const std::string &service, addrinfo **
 	else if (type == DNSType::IPV6)
 		hints.ai_family = AF_INET6;
 
-	const char *servicep = service.length() == 0 ? nullptr : service.c_str();
+	const char *servicep = service.empty() ? nullptr : service.c_str();
 
 	*res = nullptr;
 	int result = getaddrinfo(host.c_str(), servicep, &hints, res);
@@ -125,7 +126,7 @@ bool DNSResolve(const std::string &host, const std::string &service, addrinfo **
 
 void DNSResolveFree(addrinfo *res)
 {
-	if (res != NULL)
+	if (res)
 		freeaddrinfo(res);
 }
 
@@ -133,7 +134,7 @@ bool GetIPList(std::vector<std::string> &IP4s) {
 	char ipstr[INET6_ADDRSTRLEN]; // We use IPv6 length since it's longer than IPv4
 // getifaddrs first appeared in glibc 2.3, On Android officially supported since __ANDROID_API__ >= 24
 #if defined(_IFADDRS_H_) || (__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 3) || (__ANDROID_API__ >= 24)
-	INFO_LOG(SCENET, "GetIPList from getifaddrs");
+	INFO_LOG(Log::sceNet, "GetIPList from getifaddrs");
 	struct ifaddrs* ifAddrStruct = NULL;
 	struct ifaddrs* ifa = NULL;
 
@@ -161,22 +162,21 @@ bool GetIPList(std::vector<std::string> &IP4s) {
 		return true;
 	}
 #elif defined(SIOCGIFCONF) // Better detection on Linux/UNIX/MacOS/some Android
-	INFO_LOG(SCENET, "GetIPList from SIOCGIFCONF");
+	INFO_LOG(Log::sceNet, "GetIPList from SIOCGIFCONF");
 	static struct ifreq ifreqs[32];
-	struct ifconf ifc;
-	memset(&ifc, 0, sizeof(ifconf));
+	struct ifconf ifc{};
 	ifc.ifc_req = ifreqs;
 	ifc.ifc_len = sizeof(ifreqs);
 
 	int sd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sd < 0) {
-		ERROR_LOG(SCENET, "GetIPList failed to create socket (result = %i, errno = %i)", sd, errno);
+		ERROR_LOG(Log::sceNet, "GetIPList failed to create socket (result = %i, errno = %i)", sd, errno);
 		return false;
 	}
 
 	int r = ioctl(sd, SIOCGIFCONF, (char*)&ifc);
 	if (r != 0) {
-		ERROR_LOG(SCENET, "GetIPList failed ioctl/SIOCGIFCONF (result = %i, errno = %i)", r, errno);
+		ERROR_LOG(Log::sceNet, "GetIPList failed ioctl/SIOCGIFCONF (result = %i, errno = %i)", r, errno);
 		return false;
 	}
 
@@ -192,13 +192,13 @@ bool GetIPList(std::vector<std::string> &IP4s) {
 		r = ioctl(sd, SIOCGIFADDR, item);
 		if (r != 0)
 		{
-			ERROR_LOG(SCENET, "GetIPList failed ioctl/SIOCGIFADDR (i = %i, result = %i, errno = %i)", i, r, errno);
+			ERROR_LOG(Log::sceNet, "GetIPList failed ioctl/SIOCGIFADDR (i = %i, result = %i, errno = %i)", i, r, errno);
 		}
 
 		if (ifreqs[i].ifr_addr.sa_family == AF_INET) {
 			// is a valid IP4 Address
 			if (inet_ntop(AF_INET, &((struct sockaddr_in*)addr)->sin_addr, ipstr, sizeof(ipstr)) != 0) {
-				IP4s.push_back(ipstr);
+				IP4s.emplace_back(ipstr);
 			}
 		}
 		/*else if (ifreqs[i].ifr_addr.sa_family == AF_INET6) {
@@ -212,7 +212,7 @@ bool GetIPList(std::vector<std::string> &IP4s) {
 	close(sd);
 	return true;
 #else // Fallback to POSIX/Cross-platform way but may not works well on Linux (ie. only shows 127.0.0.1)
-	INFO_LOG(SCENET, "GetIPList from Fallback");
+	INFO_LOG(Log::sceNet, "GetIPList from Fallback");
 	struct addrinfo hints, * res, * p;
 	memset(&hints, 0, sizeof hints);
 	hints.ai_family = AF_UNSPEC; // AF_INET or AF_INET6 to force version

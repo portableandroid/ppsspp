@@ -20,11 +20,11 @@ static void MergeRenderAreaRectInto(VkRect2D *dest, const VkRect2D &src) {
 		dest->extent.height += (dest->offset.y - src.offset.y);
 		dest->offset.y = src.offset.y;
 	}
-	if (dest->extent.width < src.extent.width) {
-		dest->extent.width = src.extent.width;
+	if (dest->offset.x + dest->extent.width < src.offset.x + src.extent.width) {
+		dest->extent.width = src.offset.x + src.extent.width - dest->offset.x;
 	}
-	if (dest->extent.height < src.extent.height) {
-		dest->extent.height = src.extent.height;
+	if (dest->offset.y + dest->extent.height < src.offset.y + src.extent.height) {
+		dest->extent.height = src.offset.y + src.extent.height - dest->offset.y;
 	}
 }
 
@@ -44,7 +44,7 @@ RenderPassType MergeRPTypes(RenderPassType a, RenderPassType b) {
 }
 
 void VulkanQueueRunner::CreateDeviceObjects() {
-	INFO_LOG(G3D, "VulkanQueueRunner::CreateDeviceObjects");
+	INFO_LOG(Log::G3D, "VulkanQueueRunner::CreateDeviceObjects");
 
 	RPKey key{
 		VKRRenderPassLoadAction::CLEAR, VKRRenderPassLoadAction::CLEAR, VKRRenderPassLoadAction::CLEAR,
@@ -56,24 +56,24 @@ void VulkanQueueRunner::CreateDeviceObjects() {
 	// Just to check whether it makes sense to split some of these. drawidx is way bigger than the others...
 	// We should probably just move to variable-size data in a raw buffer anyway...
 	VkRenderData rd;
-	INFO_LOG(G3D, "sizeof(pipeline): %d", (int)sizeof(rd.pipeline));
-	INFO_LOG(G3D, "sizeof(draw): %d", (int)sizeof(rd.draw));
-	INFO_LOG(G3D, "sizeof(drawidx): %d", (int)sizeof(rd.drawIndexed));
-	INFO_LOG(G3D, "sizeof(clear): %d", (int)sizeof(rd.clear));
-	INFO_LOG(G3D, "sizeof(viewport): %d", (int)sizeof(rd.viewport));
-	INFO_LOG(G3D, "sizeof(scissor): %d", (int)sizeof(rd.scissor));
-	INFO_LOG(G3D, "sizeof(blendColor): %d", (int)sizeof(rd.blendColor));
-	INFO_LOG(G3D, "sizeof(push): %d", (int)sizeof(rd.push));
+	INFO_LOG(Log::G3D, "sizeof(pipeline): %d", (int)sizeof(rd.pipeline));
+	INFO_LOG(Log::G3D, "sizeof(draw): %d", (int)sizeof(rd.draw));
+	INFO_LOG(Log::G3D, "sizeof(drawidx): %d", (int)sizeof(rd.drawIndexed));
+	INFO_LOG(Log::G3D, "sizeof(clear): %d", (int)sizeof(rd.clear));
+	INFO_LOG(Log::G3D, "sizeof(viewport): %d", (int)sizeof(rd.viewport));
+	INFO_LOG(Log::G3D, "sizeof(scissor): %d", (int)sizeof(rd.scissor));
+	INFO_LOG(Log::G3D, "sizeof(blendColor): %d", (int)sizeof(rd.blendColor));
+	INFO_LOG(Log::G3D, "sizeof(push): %d", (int)sizeof(rd.push));
 #endif
 }
 
 void VulkanQueueRunner::DestroyDeviceObjects() {
-	INFO_LOG(G3D, "VulkanQueueRunner::DestroyDeviceObjects");
+	INFO_LOG(Log::G3D, "VulkanQueueRunner::DestroyDeviceObjects");
 
 	syncReadback_.Destroy(vulkan_);
 
 	renderPasses_.IterateMut([&](const RPKey &rpkey, VKRRenderPass *rp) {
-		_assert_(rp);
+		_dbg_assert_(rp);
 		rp->Destroy(vulkan_);
 		delete rp;
 	});
@@ -87,7 +87,7 @@ bool VulkanQueueRunner::CreateSwapchain(VkCommandBuffer cmdInit, VulkanBarrierBa
 	VkImage *swapchainImages = new VkImage[swapchainImageCount_];
 	res = vkGetSwapchainImagesKHR(vulkan_->GetDevice(), vulkan_->GetSwapchain(), &swapchainImageCount_, swapchainImages);
 	if (res != VK_SUCCESS) {
-		ERROR_LOG(G3D, "vkGetSwapchainImagesKHR failed");
+		ERROR_LOG(Log::G3D, "vkGetSwapchainImagesKHR failed");
 		delete[] swapchainImages;
 		return false;
 	}
@@ -245,7 +245,7 @@ void VulkanQueueRunner::DestroyBackBuffers() {
 	}
 	framebuffers_.clear();
 
-	INFO_LOG(G3D, "Backbuffers destroyed");
+	INFO_LOG(Log::G3D, "Backbuffers destroyed");
 }
 
 // Self-dependency: https://github.com/gpuweb/gpuweb/issues/442#issuecomment-547604827
@@ -488,18 +488,24 @@ void VulkanQueueRunner::ApplyMGSHack(std::vector<VKRStep *> &steps) {
 			for (int j = 0; j < (int)copies.size(); j++) {
 				steps[i + j] = copies[j];
 			}
+
+			const int firstRender = i + (int)copies.size();
+
 			// Write the renders back (so they will be deleted properly).
 			for (int j = 0; j < (int)renders.size(); j++) {
-				steps[i + j + copies.size()] = renders[j];
+				steps[firstRender + j] = renders[j];
 			}
-			_assert_(steps[i + copies.size()]->stepType == VKRStepType::RENDER);
+			_assert_(steps[firstRender]->stepType == VKRStepType::RENDER);
 			// Combine the renders.
 			for (int j = 1; j < (int)renders.size(); j++) {
-				steps[i + copies.size()]->commands.reserve(renders[j]->commands.size());
+				steps[firstRender]->commands.reserve(renders[j]->commands.size());
 				for (int k = 0; k < (int)renders[j]->commands.size(); k++) {
-					steps[i + copies.size()]->commands.push_back(renders[j]->commands[k]);
+					steps[firstRender]->commands.push_back(renders[j]->commands[k]);
 				}
-				steps[i + copies.size() + j]->stepType = VKRStepType::RENDER_SKIP;
+				MergeRenderAreaRectInto(&steps[firstRender]->render.renderArea, renders[j]->render.renderArea);
+				// Easier than removing them from the list, though that might be the better option.
+				steps[firstRender + j]->stepType = VKRStepType::RENDER_SKIP;
+				steps[firstRender + j]->commands.clear();
 			}
 			// We're done.
 			break;
@@ -560,6 +566,7 @@ void VulkanQueueRunner::ApplyMGSHack(std::vector<VKRStep *> &steps) {
 					break;
 				}
 			}
+			MergeRenderAreaRectInto(&steps[i]->render.renderArea, steps[j]->render.renderArea);
 			steps[j]->stepType = VKRStepType::RENDER_SKIP;
 		}
 
@@ -575,6 +582,7 @@ void VulkanQueueRunner::ApplyMGSHack(std::vector<VKRStep *> &steps) {
 					break;
 				}
 			}
+			MergeRenderAreaRectInto(&steps[i + 1]->render.renderArea, steps[j]->render.renderArea);
 			steps[j]->stepType = VKRStepType::RENDER_SKIP;
 		}
 
@@ -656,7 +664,8 @@ void VulkanQueueRunner::ApplySonicHack(std::vector<VKRStep *> &steps) {
 				for (int k = 0; k < (int)type2[j]->commands.size(); k++) {
 					steps[i + type1.size()]->commands.push_back(type2[j]->commands[k]);
 				}
-				steps[i + j + type1.size()]->stepType = VKRStepType::RENDER_SKIP;
+				// Technically, should merge render area here, but they're all the same so not needed.
+				steps[i + type1.size() + j]->stepType = VKRStepType::RENDER_SKIP;
 			}
 			// We're done.
 			break;
@@ -802,7 +811,7 @@ void VulkanQueueRunner::ApplyRenderPassMerge(std::vector<VKRStep *> &steps) {
 }
 
 void VulkanQueueRunner::LogSteps(const std::vector<VKRStep *> &steps, bool verbose) {
-	INFO_LOG(G3D, "===================  FRAME  ====================");
+	INFO_LOG(Log::G3D, "===================  FRAME  ====================");
 	for (size_t i = 0; i < steps.size(); i++) {
 		const VKRStep &step = *steps[i];
 		switch (step.stepType) {
@@ -822,11 +831,11 @@ void VulkanQueueRunner::LogSteps(const std::vector<VKRStep *> &steps, bool verbo
 			LogReadbackImage(step);
 			break;
 		case VKRStepType::RENDER_SKIP:
-			INFO_LOG(G3D, "(skipped render pass)");
+			INFO_LOG(Log::G3D, "(skipped render pass)");
 			break;
 		}
 	}
-	INFO_LOG(G3D, "-------------------  SUBMIT  ------------------");
+	INFO_LOG(Log::G3D, "-------------------  SUBMIT  ------------------");
 }
 
 const char *RenderPassActionName(VKRRenderPassLoadAction a) {
@@ -861,47 +870,47 @@ void VulkanQueueRunner::LogRenderPass(const VKRStep &pass, bool verbose) {
 	int w = r.framebuffer ? r.framebuffer->width : vulkan_->GetBackbufferWidth();
 	int h = r.framebuffer ? r.framebuffer->height : vulkan_->GetBackbufferHeight();
 
-	INFO_LOG(G3D, "RENDER %s Begin(%s, draws: %d, %dx%d, %s, %s, %s)", pass.tag, framebuf, r.numDraws, w, h, RenderPassActionName(r.colorLoad), RenderPassActionName(r.depthLoad), RenderPassActionName(r.stencilLoad));
+	INFO_LOG(Log::G3D, "RENDER %s Begin(%s, draws: %d, %dx%d, %s, %s, %s)", pass.tag, framebuf, r.numDraws, w, h, RenderPassActionName(r.colorLoad), RenderPassActionName(r.depthLoad), RenderPassActionName(r.stencilLoad));
 	// TODO: Log these in detail.
 	for (int i = 0; i < (int)pass.preTransitions.size(); i++) {
-		INFO_LOG(G3D, "  PRETRANSITION: %s %s -> %s", pass.preTransitions[i].fb->Tag(), AspectToString(pass.preTransitions[i].aspect), ImageLayoutToString(pass.preTransitions[i].targetLayout));
+		INFO_LOG(Log::G3D, "  PRETRANSITION: %s %s -> %s", pass.preTransitions[i].fb->Tag(), AspectToString(pass.preTransitions[i].aspect), ImageLayoutToString(pass.preTransitions[i].targetLayout));
 	}
 
 	if (verbose) {
 		for (auto &cmd : pass.commands) {
 			switch (cmd.cmd) {
 			case VKRRenderCommand::REMOVED:
-				INFO_LOG(G3D, "  (Removed)");
+				INFO_LOG(Log::G3D, "  (Removed)");
 				break;
 			case VKRRenderCommand::BIND_GRAPHICS_PIPELINE:
-				INFO_LOG(G3D, "  BindGraphicsPipeline(%x)", (int)(intptr_t)cmd.graphics_pipeline.pipeline);
+				INFO_LOG(Log::G3D, "  BindGraphicsPipeline(%x)", (int)(intptr_t)cmd.graphics_pipeline.pipeline);
 				break;
 			case VKRRenderCommand::BLEND:
-				INFO_LOG(G3D, "  BlendColor(%08x)", cmd.blendColor.color);
+				INFO_LOG(Log::G3D, "  BlendColor(%08x)", cmd.blendColor.color);
 				break;
 			case VKRRenderCommand::CLEAR:
-				INFO_LOG(G3D, "  Clear");
+				INFO_LOG(Log::G3D, "  Clear");
 				break;
 			case VKRRenderCommand::DRAW:
-				INFO_LOG(G3D, "  Draw(%d)", cmd.draw.count);
+				INFO_LOG(Log::G3D, "  Draw(%d)", cmd.draw.count);
 				break;
 			case VKRRenderCommand::DRAW_INDEXED:
-				INFO_LOG(G3D, "  DrawIndexed(%d)", cmd.drawIndexed.count);
+				INFO_LOG(Log::G3D, "  DrawIndexed(%d)", cmd.drawIndexed.count);
 				break;
 			case VKRRenderCommand::SCISSOR:
-				INFO_LOG(G3D, "  Scissor(%d, %d, %d, %d)", (int)cmd.scissor.scissor.offset.x, (int)cmd.scissor.scissor.offset.y, (int)cmd.scissor.scissor.extent.width, (int)cmd.scissor.scissor.extent.height);
+				INFO_LOG(Log::G3D, "  Scissor(%d, %d, %d, %d)", (int)cmd.scissor.scissor.offset.x, (int)cmd.scissor.scissor.offset.y, (int)cmd.scissor.scissor.extent.width, (int)cmd.scissor.scissor.extent.height);
 				break;
 			case VKRRenderCommand::STENCIL:
-				INFO_LOG(G3D, "  Stencil(ref=%d, compare=%d, write=%d)", cmd.stencil.stencilRef, cmd.stencil.stencilCompareMask, cmd.stencil.stencilWriteMask);
+				INFO_LOG(Log::G3D, "  Stencil(ref=%d, compare=%d, write=%d)", cmd.stencil.stencilRef, cmd.stencil.stencilCompareMask, cmd.stencil.stencilWriteMask);
 				break;
 			case VKRRenderCommand::VIEWPORT:
-				INFO_LOG(G3D, "  Viewport(%f, %f, %f, %f, %f, %f)", cmd.viewport.vp.x, cmd.viewport.vp.y, cmd.viewport.vp.width, cmd.viewport.vp.height, cmd.viewport.vp.minDepth, cmd.viewport.vp.maxDepth);
+				INFO_LOG(Log::G3D, "  Viewport(%f, %f, %f, %f, %f, %f)", cmd.viewport.vp.x, cmd.viewport.vp.y, cmd.viewport.vp.width, cmd.viewport.vp.height, cmd.viewport.vp.minDepth, cmd.viewport.vp.maxDepth);
 				break;
 			case VKRRenderCommand::PUSH_CONSTANTS:
-				INFO_LOG(G3D, "  PushConstants(%d)", cmd.push.size);
+				INFO_LOG(Log::G3D, "  PushConstants(%d)", cmd.push.size);
 				break;
 			case VKRRenderCommand::DEBUG_ANNOTATION:
-				INFO_LOG(G3D, "  DebugAnnotation(%s)", cmd.debugAnnotation.annotation);
+				INFO_LOG(Log::G3D, "  DebugAnnotation(%s)", cmd.debugAnnotation.annotation);
 				break;
 
 			case VKRRenderCommand::NUM_RENDER_COMMANDS:
@@ -910,24 +919,24 @@ void VulkanQueueRunner::LogRenderPass(const VKRStep &pass, bool verbose) {
 		}
 	}
 
-	INFO_LOG(G3D, "  Final: %s %s", ImageLayoutToString(pass.render.finalColorLayout), ImageLayoutToString(pass.render.finalDepthStencilLayout));
-	INFO_LOG(G3D, "RENDER End(%s) - %d commands executed", framebuf, (int)pass.commands.size());
+	INFO_LOG(Log::G3D, "  Final: %s %s", ImageLayoutToString(pass.render.finalColorLayout), ImageLayoutToString(pass.render.finalDepthStencilLayout));
+	INFO_LOG(Log::G3D, "RENDER End(%s) - %d commands executed", framebuf, (int)pass.commands.size());
 }
 
 void VulkanQueueRunner::LogCopy(const VKRStep &step) {
-	INFO_LOG(G3D, "%s", StepToString(vulkan_, step).c_str());
+	INFO_LOG(Log::G3D, "%s", StepToString(vulkan_, step).c_str());
 }
 
 void VulkanQueueRunner::LogBlit(const VKRStep &step) {
-	INFO_LOG(G3D, "%s", StepToString(vulkan_, step).c_str());
+	INFO_LOG(Log::G3D, "%s", StepToString(vulkan_, step).c_str());
 }
 
 void VulkanQueueRunner::LogReadback(const VKRStep &step) {
-	INFO_LOG(G3D, "%s", StepToString(vulkan_, step).c_str());
+	INFO_LOG(Log::G3D, "%s", StepToString(vulkan_, step).c_str());
 }
 
 void VulkanQueueRunner::LogReadbackImage(const VKRStep &step) {
-	INFO_LOG(G3D, "%s", StepToString(vulkan_, step).c_str());
+	INFO_LOG(Log::G3D, "%s", StepToString(vulkan_, step).c_str());
 }
 
 void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer cmd, int curFrame, QueueProfileContext &profile) {
@@ -1052,17 +1061,21 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 						"expected %d sample count, got %d", fbSampleCount, graphicsPipeline->SampleCount());
 				}
 
-				if (!graphicsPipeline->pipeline[(size_t)rpType]) {
-					// NOTE: If render steps got merged, it can happen that, as they ended during recording,
-					// they didn't know their final render pass type so they created the wrong pipelines in EndCurRenderStep().
-					// Unfortunately I don't know if we can fix it in any more sensible place than here.
-					// Maybe a middle pass. But let's try to just block and compile here for now, this doesn't
-					// happen all that much.
-					graphicsPipeline->pipeline[(size_t)rpType] = Promise<VkPipeline>::CreateEmpty();
-					graphicsPipeline->Create(vulkan_, renderPass->Get(vulkan_, rpType, fbSampleCount), rpType, fbSampleCount, time_now_d(), -1);
-				}
+				VkPipeline pipeline;
 
-				VkPipeline pipeline = graphicsPipeline->pipeline[(size_t)rpType]->BlockUntilReady();
+				{
+					std::lock_guard<std::mutex> lock(graphicsPipeline->mutex_);
+					if (!graphicsPipeline->pipeline[(size_t)rpType]) {
+						// NOTE: If render steps got merged, it can happen that, as they ended during recording,
+						// they didn't know their final render pass type so they created the wrong pipelines in EndCurRenderStep().
+						// Unfortunately I don't know if we can fix it in any more sensible place than here.
+						// Maybe a middle pass. But let's try to just block and compile here for now, this doesn't
+						// happen all that much.
+						graphicsPipeline->pipeline[(size_t)rpType] = Promise<VkPipeline>::CreateEmpty();
+						graphicsPipeline->Create(vulkan_, renderPass->Get(vulkan_, rpType, fbSampleCount), rpType, fbSampleCount, time_now_d(), -1);
+					}
+					pipeline = graphicsPipeline->pipeline[(size_t)rpType]->BlockUntilReady();
+				}
 
 				if (pipeline != VK_NULL_HANDLE) {
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -1214,7 +1227,7 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 			break;
 
 		default:
-			ERROR_LOG(G3D, "Unimpl queue command");
+			ERROR_LOG(Log::G3D, "Unimpl queue command");
 			break;
 		}
 	}
@@ -1777,7 +1790,7 @@ bool VulkanQueueRunner::CopyReadbackBuffer(FrameData &frameData, VKRFramebuffer 
 	VkResult res = vmaMapMemory(vulkan_->Allocator(), readback->allocation, &mappedData);
 
 	if (res != VK_SUCCESS) {
-		ERROR_LOG(G3D, "CopyReadbackBuffer: vkMapMemory failed! result=%d", (int)res);
+		ERROR_LOG(Log::G3D, "CopyReadbackBuffer: vkMapMemory failed! result=%d", (int)res);
 		return false;
 	}
 
@@ -1805,7 +1818,7 @@ bool VulkanQueueRunner::CopyReadbackBuffer(FrameData &frameData, VKRFramebuffer 
 		ConvertToD16(pixels, (const uint8_t *)mappedData, pixelStride, width, width, height, srcFormat);
 	} else {
 		// TODO: Maybe a depth conversion or something?
-		ERROR_LOG(G3D, "CopyReadbackBuffer: Unknown format");
+		ERROR_LOG(Log::G3D, "CopyReadbackBuffer: Unknown format");
 		_assert_msg_(false, "CopyReadbackBuffer: Unknown src format %d", (int)srcFormat);
 	}
 

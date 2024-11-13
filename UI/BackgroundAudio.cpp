@@ -36,7 +36,7 @@ struct WavData {
 	int raw_bytes_per_frame = 0;
 	uint8_t *raw_data = nullptr;
 	int raw_data_size = 0;
-	u8 at3_extradata[16];
+	u8 at3_extradata[16]{};
 
 	bool Read(RIFFReader &riff);
 
@@ -45,6 +45,7 @@ struct WavData {
 		raw_data = nullptr;
 	}
 
+	[[nodiscard]]
 	bool IsSimpleWAV() const {
 		bool isBad = raw_bytes_per_frame > sizeof(int16_t) * num_channels;
 		return !isBad && num_channels > 0 && sample_rate >= 8000 && codec == 0;
@@ -73,7 +74,7 @@ bool WavData::Read(RIFFReader &file_) {
 				codec = 0;
 				break;
 			default:
-				ERROR_LOG(SCEAUDIO, "Unexpected wave format %04x", format);
+				ERROR_LOG(Log::sceAudio, "Unexpected wave format %04x", format);
 				return false;
 			}
 
@@ -95,9 +96,9 @@ bool WavData::Read(RIFFReader &file_) {
 				}
 			}
 			file_.Ascend();
-			// INFO_LOG(AUDIO, "got fmt data: %i", samplesPerSec);
+			// INFO_LOG(Log::AUDIO, "got fmt data: %i", samplesPerSec);
 		} else {
-			ERROR_LOG(AUDIO, "Error - no format chunk in wav");
+			ERROR_LOG(Log::Audio, "Error - no format chunk in wav");
 			file_.Ascend();
 			return false;
 		}
@@ -156,20 +157,20 @@ bool WavData::Read(RIFFReader &file_) {
 			if (num_channels == 1 || num_channels == 2) {
 				file_.ReadData(raw_data, numBytes);
 			} else {
-				ERROR_LOG(AUDIO, "Error - bad blockalign or channels");
+				ERROR_LOG(Log::Audio, "Error - bad blockalign or channels");
 				free(raw_data);
 				raw_data = nullptr;
 				return false;
 			}
 			file_.Ascend();
 		} else {
-			ERROR_LOG(AUDIO, "Error - no data chunk in wav");
+			ERROR_LOG(Log::Audio, "Error - no data chunk in wav");
 			file_.Ascend();
 			return false;
 		}
 		file_.Ascend();
 	} else {
-		ERROR_LOG(AUDIO, "Could not descend into RIFF file.");
+		ERROR_LOG(Log::Audio, "Could not descend into RIFF file.");
 		return false;
 	}
 	sample_rate = samplesPerSec;
@@ -200,7 +201,7 @@ public:
 			blockSize = wave_.raw_bytes_per_frame;
 		}
 		decoder_ = CreateAudioDecoder((PSPAudioType)wave_.codec, wave_.sample_rate, wave_.num_channels, blockSize, extraData, extraDataSize);
-		INFO_LOG(AUDIO, "read ATRAC, frames: %d, rate %d", wave_.numFrames, wave_.sample_rate);
+		INFO_LOG(Log::Audio, "read ATRAC, frames: %d, rate %d", wave_.numFrames, wave_.sample_rate);
 	}
 
 	~AT3PlusReader() {
@@ -210,18 +211,19 @@ public:
 		decoder_ = nullptr;
 	}
 
-	bool IsOK() { return wave_.raw_data != nullptr; }
+	bool IsOK() const { return wave_.raw_data != nullptr; }
 
 	bool Read(int *buffer, int len) {
 		if (!wave_.raw_data)
 			return false;
 
 		while (bgQueue.size() < (size_t)(len * 2)) {
-			int outBytes = 0;
+			int outSamples = 0;
 			int inbytesConsumed = 0;
-			decoder_->Decode(wave_.raw_data + raw_offset_, wave_.raw_bytes_per_frame, &inbytesConsumed, (uint8_t *)buffer_, &outBytes);
-			if (!outBytes)
+			bool result = decoder_->Decode(wave_.raw_data + raw_offset_, wave_.raw_bytes_per_frame, &inbytesConsumed, 2, (int16_t *)buffer_, &outSamples);
+			if (!result || !outSamples)
 				return false;
+			int outBytes = outSamples * 2 * sizeof(int16_t);
 
 			if (wave_.raw_offset_loop_end != 0 && raw_offset_ == wave_.raw_offset_loop_end) {
 				// Only take the remaining bytes, but convert to stereo s16.
@@ -333,11 +335,13 @@ bool BackgroundAudio::Play() {
 	if (at3Reader_) {
 		if (at3Reader_->Read(buffer, sz)) {
 			if (fadingOut_) {
+                float vol = volume_;
 				for (int i = 0; i < sz*2; i += 2) {
-					buffer[i] *= volume_;
-					buffer[i + 1] *= volume_;
-					volume_ += delta_;
+					buffer[i] = (int)((float)buffer[i] * vol);
+					buffer[i + 1] = (int)((float)buffer[i + 1] * vol);
+					vol += delta_;
 				}
+                volume_ = vol;
 			}
 		}
 	} else {
@@ -394,7 +398,7 @@ Sample *Sample::Load(const std::string &path) {
 	size_t data_size = 0;
 	uint8_t *data = g_VFS.ReadFile(path.c_str(), &data_size);
 	if (!data || data_size > 100000000) {
-		WARN_LOG(AUDIO, "Failed to load sample '%s'", path.c_str());
+		WARN_LOG(Log::Audio, "Failed to load sample '%s'", path.c_str());
 		return nullptr;
 	}
 
@@ -411,7 +415,7 @@ Sample *Sample::Load(const std::string &path) {
 		delete[] data;
 
 		if (!wave.IsSimpleWAV()) {
-			ERROR_LOG(AUDIO, "Wave format not supported for mixer playback. Must be 8-bit or 16-bit raw mono or stereo. '%s'", path.c_str());
+			ERROR_LOG(Log::Audio, "Wave format not supported for mixer playback. Must be 8-bit or 16-bit raw mono or stereo. '%s'", path.c_str());
 			return nullptr;
 		}
 
@@ -437,11 +441,18 @@ Sample *Sample::Load(const std::string &path) {
 	mp3dec_t mp3d;
 	mp3dec_init(&mp3d);
 	mp3dec_file_info_t mp3_info;
-	int samples = mp3dec_load_buf(&mp3d, data, data_size, &mp3_info, nullptr, nullptr);
+	int retval = mp3dec_load_buf(&mp3d, data, data_size, &mp3_info, nullptr, nullptr);
+
+	if (retval < 0 || mp3_info.samples == 0) {
+		ERROR_LOG(Log::Audio, "Couldn't load MP3 for sound effect from %s", path.c_str());
+		return nullptr;
+	}
+
 	// mp3_info contains the decoded data.
 	int16_t *sample_data = new int16_t[mp3_info.samples];
 	memcpy(sample_data, mp3_info.buffer, mp3_info.samples * sizeof(int16_t));
-	Sample *sample = new Sample(sample_data, mp3_info.channels, (int)mp3_info.samples, mp3_info.hz);
+
+	Sample *sample = new Sample(sample_data, mp3_info.channels, (int)mp3_info.samples / mp3_info.channels, mp3_info.hz);
 	free(mp3_info.buffer);
 	delete[] data;
 	return sample;
@@ -547,14 +558,38 @@ void SoundEffectMixer::LoadDefaultSample(UI::UISound sound) {
 	}
 	Sample *sample = Sample::Load(filename);
 	if (!sample) {
-		ERROR_LOG(SYSTEM, "Failed to load the default sample for UI sound %d", (int)sound);
+		ERROR_LOG(Log::System, "Failed to load the default sample for UI sound %d", (int)sound);
 	}
 	std::lock_guard<std::mutex> guard(mutex_);
 	samples_[(size_t)sound] = std::unique_ptr<Sample>(sample);
 }
 
-void SoundEffectMixer::LoadSamples() {
+class SampleLoadTask : public Task {
+public:
+	SampleLoadTask(SoundEffectMixer *mixer) : mixer_(mixer) {}
+	TaskType Type() const override { return TaskType::IO_BLOCKING; }
+	TaskPriority Priority() const override {
+		return TaskPriority::NORMAL;
+	}
+	virtual void Run() override {
+		mixer_->LoadSamplesOnThread();
+	}
+private:
+	SoundEffectMixer *mixer_;
+};
+
+void SoundEffectMixer::Init() {
 	samples_.resize((size_t)UI::UISound::COUNT);
+	UI::SetSoundCallback([](UI::UISound sound, float volume) {
+		g_BackgroundAudio.SFX().Play(sound, volume);
+	});
+
+	// Load samples in the background.
+
+	g_threadManager.EnqueueTask(new SampleLoadTask(this));
+}
+
+void SoundEffectMixer::LoadSamplesOnThread() {
 	LoadDefaultSample(UI::UISound::BACK);
 	LoadDefaultSample(UI::UISound::SELECT);
 	LoadDefaultSample(UI::UISound::CONFIRM);
@@ -571,8 +606,4 @@ void SoundEffectMixer::LoadSamples() {
 	} else {
 		LoadDefaultSample(UI::UISound::LEADERBOARD_SUBMITTED);
 	}
-
-	UI::SetSoundCallback([](UI::UISound sound, float volume) {
-		g_BackgroundAudio.SFX().Play(sound, volume);
-	});
 }

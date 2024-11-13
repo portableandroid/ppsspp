@@ -55,8 +55,8 @@
 #include "Windows/WindowsAudio.h"
 #include "ext/disarm.h"
 
-#include "Common/LogManager.h"
-#include "Common/ConsoleListener.h"
+#include "Common/Log/LogManager.h"
+#include "Common/Log/ConsoleListener.h"
 #include "Common/StringUtils.h"
 
 #include "Commctrl.h"
@@ -106,6 +106,7 @@ CVFPUDlg *vfpudlg = nullptr;
 
 static std::string langRegion;
 static std::string osName;
+static std::string osVersion;
 static std::string gpuDriverVersion;
 
 static std::string restartArgs;
@@ -120,7 +121,7 @@ static double g_lastActivity = 0.0;
 static double g_lastKeepAwake = 0.0;
 // Time until we stop considering the core active without user input.
 // Should this be configurable?  2 hours currently.
-static const double ACTIVITY_IDLE_TIMEOUT = 2.0 * 3600.0;
+static constexpr double ACTIVITY_IDLE_TIMEOUT = 2.0 * 3600.0;
 
 void System_LaunchUrl(LaunchUrlType urlType, const char *url) {
 	ShellExecute(NULL, L"open", ConvertUTF8ToWString(url).c_str(), NULL, NULL, SW_SHOWNORMAL);
@@ -203,6 +204,8 @@ std::string System_GetProperty(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_NAME:
 		return osName;
+	case SYSPROP_SYSTEMBUILD:
+		return osVersion;
 	case SYSPROP_LANGREGION:
 		return langRegion;
 	case SYSPROP_CLIPBOARD_TEXT:
@@ -269,23 +272,23 @@ extern WindowsAudioBackend *winAudioBackend;
 
 #ifdef _WIN32
 #if PPSSPP_PLATFORM(UWP)
-static int ScreenDPI() {
-	return 96;  // TODO UWP
+static float ScreenDPI() {
+	return 96.0f;  // TODO UWP
 }
 #else
-static int ScreenDPI() {
+static float ScreenDPI() {
 	HDC screenDC = GetDC(nullptr);
 	int dotsPerInch = GetDeviceCaps(screenDC, LOGPIXELSY);
 	ReleaseDC(nullptr, screenDC);
-	return dotsPerInch ? dotsPerInch : 96;
+	return dotsPerInch ? (float)dotsPerInch : 96.0f;
 }
 #endif
 #endif
 
-static int ScreenRefreshRateHz() {
-	static int rate = 0;
+static float ScreenRefreshRateHz() {
+	static float rate = 0.0f;
 	static double lastCheck = 0.0;
-	double now = time_now_d();
+	const double now = time_now_d();
 	if (!rate || lastCheck < now - 10.0) {
 		lastCheck = now;
 		DEVMODE lpDevMode{};
@@ -295,12 +298,12 @@ static int ScreenRefreshRateHz() {
 		// TODO: Use QueryDisplayConfig instead (Win7+) so we can get fractional refresh rates correctly.
 
 		if (EnumDisplaySettings(NULL, ENUM_CURRENT_SETTINGS, &lpDevMode) == 0) {
-			rate = 60;  // default value
+			rate = 60.0f;  // default value
 		} else {
 			if (lpDevMode.dmFields & DM_DISPLAYFREQUENCY) {
-				rate = lpDevMode.dmDisplayFrequency > 60 ? lpDevMode.dmDisplayFrequency : 60;
+				rate = (float)(lpDevMode.dmDisplayFrequency > 60 ? lpDevMode.dmDisplayFrequency : 60);
 			} else {
-				rate = 60;
+				rate = 60.0f;
 			}
 		}
 	}
@@ -340,9 +343,9 @@ int64_t System_GetPropertyInt(SystemProperty prop) {
 float System_GetPropertyFloat(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_DISPLAY_REFRESH_RATE:
-		return (float)ScreenRefreshRateHz();
+		return ScreenRefreshRateHz();
 	case SYSPROP_DISPLAY_DPI:
-		return (float)ScreenDPI();
+		return ScreenDPI();
 	case SYSPROP_DISPLAY_SAFE_INSET_LEFT:
 	case SYSPROP_DISPLAY_SAFE_INSET_RIGHT:
 	case SYSPROP_DISPLAY_SAFE_INSET_TOP:
@@ -355,6 +358,7 @@ float System_GetPropertyFloat(SystemProperty prop) {
 
 bool System_GetPropertyBool(SystemProperty prop) {
 	switch (prop) {
+	case SYSPROP_HAS_TEXT_CLIPBOARD:
 	case SYSPROP_HAS_DEBUGGER:
 	case SYSPROP_HAS_FILE_BROWSER:
 	case SYSPROP_HAS_FOLDER_BROWSER:
@@ -480,7 +484,7 @@ void System_Notify(SystemNotification notification) {
 	}
 }
 
-std::wstring MakeFilter(std::wstring filter) {
+static std::wstring MakeFilter(std::wstring filter) {
 	for (size_t i = 0; i < filter.length(); i++) {
 		if (filter[i] == '|')
 			filter[i] = '\0';
@@ -528,10 +532,22 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		PostMessage(MainWindow::GetHWND(), MainWindow::WM_USER_WINDOW_TITLE_CHANGED, 0, 0);
 		return true;
 	}
+	case SystemRequestType::SET_KEEP_SCREEN_BRIGHT:
+	{
+		MainWindow::SetKeepScreenBright(param3 != 0);
+		return true;
+	}
 	case SystemRequestType::INPUT_TEXT_MODAL:
 		std::thread([=] {
 			std::string out;
-			if (InputBox_GetString(MainWindow::GetHInstance(), MainWindow::GetHWND(), ConvertUTF8ToWString(param1).c_str(), param2, out)) {
+			InputBoxFlags flags{};
+			if (param3) {
+				flags |= InputBoxFlags::PasswordMasking;
+			}
+			if (!param2.empty()) {
+				flags |= InputBoxFlags::Selected;
+			}
+			if (InputBox_GetString(MainWindow::GetHInstance(), MainWindow::GetHWND(), ConvertUTF8ToWString(param1).c_str(), param2, out, flags)) {
 				g_requestManager.PostSystemSuccess(requestId, out.c_str());
 			} else {
 				g_requestManager.PostSystemFailure(requestId);
@@ -635,7 +651,27 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		return true;
 	}
 	case SystemRequestType::CREATE_GAME_SHORTCUT:
-		return W32Util::CreateDesktopShortcut(param1, param2);
+	{
+		// Get the game info to get our hands on the icon png
+		Path gamePath(param1);
+		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, gamePath, GameInfoFlags::ICON);
+		Path icoPath;
+		if (info->icon.dataLoaded) {
+			// Write the icon png out as a .ICO file so the shortcut can point to it
+
+			// Savestate seems like a good enough place to put ico files.
+			Path iconFolder = GetSysDirectory(PSPDirectories::DIRECTORY_SAVESTATE);
+
+			icoPath = iconFolder / (info->id + ".ico");
+			if (!File::Exists(icoPath)) {
+				if (!W32Util::CreateICOFromPNGData((const uint8_t *)info->icon.data.data(), info->icon.data.size(), icoPath)) {
+					ERROR_LOG(Log::System, "ICO creation failed");
+					icoPath.clear();
+				}
+			}
+		}
+		return W32Util::CreateDesktopShortcut(param1, param2, icoPath);
+	}
 	case SystemRequestType::RUN_CALLBACK_IN_WNDPROC:
 	{
 		auto func = reinterpret_cast<void (*)(void *window, void *userdata)>(param3);
@@ -651,7 +687,8 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 void System_AskForPermission(SystemPermission permission) {}
 PermissionStatus System_GetPermissionStatus(SystemPermission permission) { return PERMISSION_STATUS_GRANTED; }
 
-void EnableCrashingOnCrashes() {
+// Don't swallow exceptions.
+static void EnableCrashingOnCrashes() {
 	typedef BOOL (WINAPI *tGetPolicy)(LPDWORD lpFlags);
 	typedef BOOL (WINAPI *tSetPolicy)(DWORD dwFlags);
 	const DWORD EXCEPTION_SWALLOWING = 0x1;
@@ -714,7 +751,7 @@ static bool DetectVulkanInExternalProcess() {
 	if (W32Util::ExecuteAndGetReturnCode(moduleFilename.c_str(), cmdline, workingDirectory.c_str(), &exitCode)) {
 		return exitCode == EXIT_CODE_VULKAN_WORKS;
 	} else {
-		ERROR_LOG(G3D, "Failed to detect Vulkan in external process somehow");
+		ERROR_LOG(Log::G3D, "Failed to detect Vulkan in external process somehow");
 		return false;
 	}
 }
@@ -782,7 +819,7 @@ static void InitMemstickDirectory() {
 	if (!File::Exists(g_Config.memStickDirectory)) {
 		if (!File::CreateDir(g_Config.memStickDirectory))
 			g_Config.memStickDirectory = myDocsPath;
-		INFO_LOG(COMMON, "Memstick directory not present, creating at '%s'", g_Config.memStickDirectory.c_str());
+		INFO_LOG(Log::Common, "Memstick directory not present, creating at '%s'", g_Config.memStickDirectory.c_str());
 	}
 
 	Path testFile = g_Config.memStickDirectory / "_writable_test.$$$";
@@ -861,6 +898,8 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 
 	SetCurrentThreadName("Main");
 
+	TimeInit();
+
 	WinMainInit();
 
 #ifndef _DEBUG
@@ -876,12 +915,18 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 	langRegion = GetDefaultLangRegion();
 	osName = GetWindowsVersion() + " " + GetWindowsSystemArchitecture();
 
+	// OS Build
+	uint32_t outMajor = 0, outMinor = 0, outBuild = 0;
+	if (GetVersionFromKernel32(outMajor, outMinor, outBuild)) {
+		// Builds with (service pack) don't show OS Build for now
+		osVersion = std::to_string(outMajor) + "." + std::to_string(outMinor) + "." + std::to_string(outBuild);
+	}
+
 	std::string configFilename = "";
 	const std::wstring configOption = L"--config=";
 
 	std::string controlsConfigFilename = "";
 	const std::wstring controlsOption = L"--controlconfig=";
-
 
 	for (size_t i = 1; i < wideArgs.size(); ++i) {
 		if (wideArgs[i][0] == L'\0')
@@ -969,7 +1014,7 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 
 #ifndef _DEBUG
 	// See #11719 - too many Vulkan drivers crash on basic init.
-	if (g_Config.IsBackendEnabled(GPUBackend::VULKAN, false)) {
+	if (g_Config.IsBackendEnabled(GPUBackend::VULKAN)) {
 		VulkanSetAvailable(DetectVulkanInExternalProcess());
 	}
 #endif
@@ -984,14 +1029,11 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 	//   - By default in Debug, the console should be shown by default.
 	//   - The -l switch is expected to show the log console, REGARDLESS of config settings.
 	//   - It should be possible to log to a file without showing the console.
-	LogManager::GetInstance()->GetConsoleListener()->Init(showLog, 150, 120, "PPSSPP Debug Console");
+	LogManager::GetInstance()->GetConsoleListener()->Init(showLog, 150, 120);
 
 	if (debugLogLevel) {
 		LogManager::GetInstance()->SetAllLogLevels(LogLevel::LDEBUG);
 	}
-
-	// This still seems to improve performance noticeably.
-	timeBeginPeriod(1);
 
 	ContextMenuInit(_hInstance);
 	MainWindow::Init(_hInstance);

@@ -200,18 +200,18 @@ static void ExpandBezier(int &count, int op, const std::vector<SimpleVertex> &si
 	output.count = 0;
 
 	ControlPoints cpoints;
-	cpoints.pos = (Vec3f *)AllocateAlignedMemory(sizeof(Vec3f) * num_points, 16);
-	cpoints.tex = (Vec2f *)AllocateAlignedMemory(sizeof(Vec2f) * num_points, 16);
-	cpoints.col = (Vec4f *)AllocateAlignedMemory(sizeof(Vec4f) * num_points, 16);
+	cpoints.pos = new Vec3f[num_points];
+	cpoints.tex = new Vec2f[num_points];
+	cpoints.col = new Vec4f[num_points];
 	cpoints.Convert(points.data(), num_points);
 
 	surface.Init((int)generatedVerts.size());
 	SoftwareTessellation(output, surface, gstate.vertType, cpoints);
 	count = output.count;
 
-	FreeAlignedMemory(cpoints.pos);
-	FreeAlignedMemory(cpoints.tex);
-	FreeAlignedMemory(cpoints.col);
+	delete [] cpoints.pos;
+	delete [] cpoints.tex;
+	delete [] cpoints.col;
 }
 
 static void ExpandSpline(int &count, int op, const std::vector<SimpleVertex> &simpleVerts, const std::vector<u16> &indices, std::vector<SimpleVertex> &generatedVerts, std::vector<u16> &generatedInds) {
@@ -286,11 +286,11 @@ void CGEDebugger::UpdatePrimPreview(u32 op, int which) {
 	}
 
 	if (prim_type >= 7) {
-		ERROR_LOG(G3D, "Unsupported prim type: %x", op);
+		ERROR_LOG(Log::G3D, "Unsupported prim type: %x", op);
 		return;
 	}
 	if (!gpuDebug) {
-		ERROR_LOG(G3D, "Invalid debugging environment, shutting down?");
+		ERROR_LOG(Log::G3D, "Invalid debugging environment, shutting down?");
 		return;
 	}
 	which &= previewsEnabled_;
@@ -303,7 +303,7 @@ void CGEDebugger::UpdatePrimPreview(u32 op, int which) {
 	static std::vector<u16> indices;
 
 	if (!gpuDebug->GetCurrentSimpleVertices(count, vertices, indices)) {
-		ERROR_LOG(G3D, "Vertex preview not yet supported");
+		ERROR_LOG(Log::G3D, "Vertex preview not yet supported");
 		return;
 	}
 
@@ -348,6 +348,7 @@ void CGEDebugger::UpdatePrimPreview(u32 op, int which) {
 	u16 minIndex = 0;
 	u16 maxIndex = count - 1;
 	if (!indices.empty()) {
+		_dbg_assert_(count <= indices.size());
 		minIndex = 0xFFFF;
 		maxIndex = 0;
 		for (int i = 0; i < count; ++i) {

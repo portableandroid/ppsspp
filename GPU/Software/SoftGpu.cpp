@@ -406,7 +406,7 @@ SoftGPU::SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	for (size_t i = 0; i < ARRAY_SIZE(softgpuCommandTable); i++) {
 		const u8 cmd = softgpuCommandTable[i].cmd;
 		if (dupeCheck.find(cmd) != dupeCheck.end()) {
-			ERROR_LOG(G3D, "Command table Dupe: %02x (%i)", (int)cmd, (int)cmd);
+			ERROR_LOG(Log::G3D, "Command table Dupe: %02x (%i)", (int)cmd, (int)cmd);
 		} else {
 			dupeCheck.insert(cmd);
 		}
@@ -420,7 +420,7 @@ SoftGPU::SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	// Find commands missing from the table.
 	for (int i = 0; i < 0xEF; i++) {
 		if (dupeCheck.find((u8)i) == dupeCheck.end()) {
-			ERROR_LOG(G3D, "Command missing from table: %02x (%i)", i, i);
+			ERROR_LOG(Log::G3D, "Command missing from table: %02x (%i)", i, i);
 		}
 	}
 
@@ -524,7 +524,7 @@ void SoftGPU::ConvertTextureDescFrom16(Draw::TextureDesc &desc, int srcwidth, in
 			break;
 
 		default:
-			ERROR_LOG_REPORT(G3D, "Software: Unexpected framebuffer format: %d", displayFormat_);
+			ERROR_LOG_REPORT(Log::G3D, "Software: Unexpected framebuffer format: %d", displayFormat_);
 			break;
 		}
 	}
@@ -628,6 +628,7 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 	}
 	if (!hasImage) {
 		draw_->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::CLEAR, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE }, "CopyToCurrentFboFromDisplayRam");
+		presentation_->NotifyPresent();
 		return;
 	}
 
@@ -654,6 +655,17 @@ void SoftGPU::CopyDisplayToOutput(bool reallyDirty) {
 	// The display always shows 480x272.
 	CopyToCurrentFboFromDisplayRam(FB_WIDTH, FB_HEIGHT);
 	MarkDirty(displayFramebuf_, displayStride_, 272, displayFormat_, SoftGPUVRAMDirty::CLEAR);
+}
+
+void SoftGPU::BeginHostFrame() {
+	GPUCommon::BeginHostFrame();
+	if (presentation_) {
+		presentation_->BeginFrame();
+	}
+}
+
+bool SoftGPU::PresentedThisFrame() const {
+	return presentation_->PresentedThisFrame();
 }
 
 void SoftGPU::MarkDirty(uint32_t addr, uint32_t stride, uint32_t height, GEBufferFormat fmt, SoftGPUVRAMDirty value) {
@@ -848,7 +860,7 @@ void SoftGPU::Execute_Prim(u32 op, u32 diff) {
 	FlushImm();
 
 	if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-		ERROR_LOG_REPORT(G3D, "Software: Bad vertex address %08x!", gstate_c.vertexAddr);
+		ERROR_LOG_REPORT(Log::G3D, "Software: Bad vertex address %08x!", gstate_c.vertexAddr);
 		return;
 	}
 
@@ -856,7 +868,7 @@ void SoftGPU::Execute_Prim(u32 op, u32 diff) {
 	const void *indices = NULL;
 	if ((gstate.vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-			ERROR_LOG_REPORT(G3D, "Software: Bad index address %08x!", gstate_c.indexAddr);
+			ERROR_LOG_REPORT(Log::G3D, "Software: Bad index address %08x!", gstate_c.indexAddr);
 			return;
 		}
 		indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
@@ -886,7 +898,7 @@ void SoftGPU::Execute_Bezier(u32 op, u32 diff) {
 	}
 
 	if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-		ERROR_LOG_REPORT(G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
+		ERROR_LOG_REPORT(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
 		return;
 	}
 
@@ -894,14 +906,14 @@ void SoftGPU::Execute_Bezier(u32 op, u32 diff) {
 	const void *indices = NULL;
 	if ((gstate.vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-			ERROR_LOG_REPORT(G3D, "Bad index address %08x!", gstate_c.indexAddr);
+			ERROR_LOG_REPORT(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
 			return;
 		}
 		indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
 	}
 
 	if ((gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) || vertTypeIsSkinningEnabled(gstate.vertType)) {
-		DEBUG_LOG_REPORT(G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", gstate.vertType, (gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(gstate.vertType));
+		DEBUG_LOG_REPORT(Log::G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", gstate.vertType, (gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(gstate.vertType));
 	}
 
 	Spline::BezierSurface surface;
@@ -938,7 +950,7 @@ void SoftGPU::Execute_Spline(u32 op, u32 diff) {
 	}
 
 	if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-		ERROR_LOG_REPORT(G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
+		ERROR_LOG_REPORT(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
 		return;
 	}
 
@@ -946,14 +958,14 @@ void SoftGPU::Execute_Spline(u32 op, u32 diff) {
 	const void *indices = NULL;
 	if ((gstate.vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-			ERROR_LOG_REPORT(G3D, "Bad index address %08x!", gstate_c.indexAddr);
+			ERROR_LOG_REPORT(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
 			return;
 		}
 		indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
 	}
 
 	if ((gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) || vertTypeIsSkinningEnabled(gstate.vertType)) {
-		DEBUG_LOG_REPORT(G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", gstate.vertType, (gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(gstate.vertType));
+		DEBUG_LOG_REPORT(Log::G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", gstate.vertType, (gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(gstate.vertType));
 	}
 
 	Spline::SplineSurface surface;
@@ -1007,7 +1019,7 @@ void SoftGPU::Execute_LoadClut(u32 op, u32 diff) {
 		}
 	} else if (clutAddr != 0) {
 		// Some invalid addresses trigger a crash, others fill with zero.  We always fill zero.
-		DEBUG_LOG(G3D, "Software: Invalid CLUT address, filling with garbage instead of crashing");
+		DEBUG_LOG(Log::G3D, "Software: Invalid CLUT address, filling with garbage instead of crashing");
 		memset(clut, 0x00, clutTotalBytes);
 		changed = true;
 	}
@@ -1236,7 +1248,10 @@ void SoftGPU::Execute_Call(u32 op, u32 diff) {
 
 	const u32 target = gstate_c.getRelativeAddress(op & 0x00FFFFFC);
 	if (!Memory::IsValidAddress(target)) {
-		ERROR_LOG(G3D, "CALL to illegal address %08x - ignoring! data=%06x", target, op & 0x00FFFFFF);
+		ERROR_LOG(Log::G3D, "CALL to illegal address %08x - ignoring! data=%06x", target, op & 0x00FFFFFF);
+		if (g_Config.bIgnoreBadMemAccess) {
+			return;
+		}
 		gpuState = GPUSTATE_ERROR;
 		downcount = 0;
 		return;
@@ -1244,7 +1259,7 @@ void SoftGPU::Execute_Call(u32 op, u32 diff) {
 
 	const u32 retval = currentList->pc + 4;
 	if (currentList->stackptr == ARRAY_SIZE(currentList->stack)) {
-		ERROR_LOG(G3D, "CALL: Stack full!");
+		ERROR_LOG(Log::G3D, "CALL: Stack full!");
 	} else {
 		auto &stackEntry = currentList->stack[currentList->stackptr++];
 		stackEntry.pc = retval;

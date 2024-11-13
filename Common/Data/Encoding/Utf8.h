@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 
@@ -39,7 +40,7 @@ class UTF8 {
 public:
 	static const uint32_t INVALID = (uint32_t)-1;
 	// TODO: Try to get rid of this constructor.
-	explicit UTF8(const char *c);
+	explicit UTF8(const char *c) : c_(c), size_((int)strlen(c)), index_(0) {}
 	explicit UTF8(std::string_view view) : c_(view.data()), size_((int)view.size()), index_(0) {}
 	explicit UTF8(std::string_view view, int index) : c_(view.data()), size_((int)view.size()), index_(index) {}
 	bool end() const { return index_ == size_; }
@@ -125,3 +126,7 @@ std::string ConvertUCS2ToUTF8(const std::u16string &wstr);
 // Dest size in units, not bytes.
 void ConvertUTF8ToUCS2(char16_t *dest, size_t destSize, std::string_view source);
 std::u16string ConvertUTF8ToUCS2(std::string_view source);
+
+// Java needs 4-byte UTF-8 to be converted to surrogate pairs, each component of which get
+// encoded into 3-byte UTF-8.
+void ConvertUTF8ToJavaModifiedUTF8(std::string *output, std::string_view input);

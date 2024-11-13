@@ -486,7 +486,7 @@ void TextureCacheVulkan::BuildTexture(TexCacheEntry *const entry) {
 		if (uploadCS_ != VK_NULL_HANDLE) {
 			computeUpload = true;
 		} else {
-			WARN_LOG(G3D, "Falling back to software scaling, hardware shader didn't compile");
+			WARN_LOG(Log::G3D, "Falling back to software scaling, hardware shader didn't compile");
 		}
 	}
 
@@ -496,7 +496,7 @@ void TextureCacheVulkan::BuildTexture(TexCacheEntry *const entry) {
 	}
 
 	if (plan.saveTexture) {
-		INFO_LOG(G3D, "About to save texture");
+		INFO_LOG(Log::G3D, "About to save texture (%dx%d)", plan.createW, plan.createH);
 		actualFmt = VULKAN_8888_FORMAT;
 	}
 
@@ -517,7 +517,7 @@ void TextureCacheVulkan::BuildTexture(TexCacheEntry *const entry) {
 	bool allocSuccess = image->CreateDirect(plan.createW, plan.createH, plan.depth, plan.levelsToCreate, actualFmt, imageLayout, usage, &barrier, mapping);
 	barrier.Flush(cmdInit);
 	if (!allocSuccess && !lowMemoryMode_) {
-		WARN_LOG_REPORT(G3D, "Texture cache ran out of GPU memory; switching to low memory mode");
+		WARN_LOG_REPORT(Log::G3D, "Texture cache ran out of GPU memory; switching to low memory mode");
 		lowMemoryMode_ = true;
 		decimationCounter_ = 0;
 		Decimate(entry, true);
@@ -545,7 +545,7 @@ void TextureCacheVulkan::BuildTexture(TexCacheEntry *const entry) {
 	}
 
 	if (!allocSuccess) {
-		ERROR_LOG(G3D, "Failed to create texture (%dx%d)", plan.w, plan.h);
+		ERROR_LOG(Log::G3D, "Failed to create texture (%dx%d)", plan.w, plan.h);
 		delete entry->vkTex;
 		entry->vkTex = nullptr;
 	}
@@ -617,7 +617,7 @@ void TextureCacheVulkan::BuildTexture(TexCacheEntry *const entry) {
 			data = pushBuffer->Allocate(uploadSize, pushAlignment, &texBuf, &bufferOffset);
 			double replaceStart = time_now_d();
 			if (!plan.replaced->CopyLevelTo(plan.baseLevelSrc + i, (uint8_t *)data, uploadSize, byteStride)) {  // If plan.doReplace, this shouldn't fail.
-				WARN_LOG(G3D, "Failed to copy replaced texture level");
+				WARN_LOG(Log::G3D, "Failed to copy replaced texture level");
 				// TODO: Fill with some pattern?
 			}
 			replacementTimeThisFrame_ += time_now_d() - replaceStart;
@@ -652,7 +652,7 @@ void TextureCacheVulkan::BuildTexture(TexCacheEntry *const entry) {
 			}
 			// Format might be wrong in lowMemoryMode_, so don't save.
 			if (plan.saveTexture && !lowMemoryMode_) {
-				INFO_LOG(G3D, "Calling NotifyTextureDecoded %08x", entry->addr);
+				INFO_LOG(Log::G3D, "Calling NotifyTextureDecoded %08x", entry->addr);
 
 				// When hardware texture scaling is enabled, this saves the original.
 				int w = dataScaled ? mipWidth : mipUnscaledWidth;
@@ -768,8 +768,11 @@ void TextureCacheVulkan::LoadVulkanTextureLevel(TexCacheEntry &entry, uint8_t *w
 	if (scaleFactor > 1) {
 		u32 fmt = dstFmt;
 		// CPU scaling reads from the destination buffer so we want cached RAM.
-		uint8_t *rearrange = (uint8_t *)AllocateAlignedMemory(w * scaleFactor * h * scaleFactor * 4, 16);
-		scaler_.ScaleAlways((u32 *)rearrange, pixelData, w, h, &w, &h, scaleFactor);
+		size_t allocBytes = w * scaleFactor * h * scaleFactor * 4;
+		uint8_t *scaleBuf = (uint8_t *)AllocateAlignedMemory(allocBytes, 16);
+		_assert_msg_(scaleBuf, "Failed to allocate %d aligned bytes for texture scaler", (int)allocBytes);
+
+		scaler_.ScaleAlways((u32 *)scaleBuf, pixelData, w, h, &w, &h, scaleFactor);
 		pixelData = (u32 *)writePtr;
 
 		// We always end up at 8888.  Other parts assume this.
@@ -779,13 +782,13 @@ void TextureCacheVulkan::LoadVulkanTextureLevel(TexCacheEntry &entry, uint8_t *w
 
 		if (decPitch != rowPitch) {
 			for (int y = 0; y < h; ++y) {
-				memcpy(writePtr + rowPitch * y, rearrange + decPitch * y, w * bpp);
+				memcpy(writePtr + rowPitch * y, scaleBuf + decPitch * y, w * bpp);
 			}
 			decPitch = rowPitch;
 		} else {
-			memcpy(writePtr, rearrange, w * h * 4);
+			memcpy(writePtr, scaleBuf, w * h * 4);
 		}
-		FreeAlignedMemory(rearrange);
+		FreeAlignedMemory(scaleBuf);
 	}
 }
 

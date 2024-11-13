@@ -16,6 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <shlwapi.h>
+
 #include "Common/Thread/ThreadUtil.h"
 #include "CaptureDevice.h"
 #include "BufferLock.h"
@@ -180,8 +181,8 @@ HRESULT ReaderCallback::OnReadSample(
 				else
 					srcPadding = device->deviceParam.default_stride - lStride;
 
-				if (SUCCEEDED(hr)) {
 #ifdef USE_FFMPEG
+				if (SUCCEEDED(hr)) {
 					// Convert image to RGB24
 					if (lStride > 0) {
 						imgConvert(
@@ -199,6 +200,25 @@ HRESULT ReaderCallback::OnReadSample(
 						av_free(invertedSrcImg);
 					}
 
+					// Mirror the image in-place if needed.
+					if (g_Config.bCameraMirrorHorizontal) {
+						for (int y = 0; y < (int)dstH; y++) {
+							uint8_t *line = device->imageRGB + y * device->imgRGBLineSizes[0];
+							for (int x = 0; x < (int)dstW / 2; x++) {
+								const int invX = dstW - 1 - x;
+								const uint8_t r = line[x * 3 + 0];
+								const uint8_t g = line[x * 3 + 1];
+								const uint8_t b = line[x * 3 + 2];
+								line[x * 3 + 0] = line[invX * 3 + 0];
+								line[x * 3 + 1] = line[invX * 3 + 1];
+								line[x * 3 + 2] = line[invX * 3 + 2];
+								line[invX * 3 + 0] = r;
+								line[invX * 3 + 1] = g;
+								line[invX * 3 + 2] = b;
+							}
+						}
+					}
+
 					// Compress image to jpeg from RGB24.
 					jpge::compress_image_to_jpeg_file_in_memory(
 						device->imageJpeg, imgJpegSize,
@@ -206,8 +226,8 @@ HRESULT ReaderCallback::OnReadSample(
 						dstH,
 						3,
 						device->imageRGB);
-#endif
 				}
+#endif
 				Camera::pushCameraImage(imgJpegSize, device->imageJpeg);
 			}
 			// Request the next frame.
@@ -224,7 +244,7 @@ HRESULT ReaderCallback::OnReadSample(
 			delete videoBuffer;
 			break;
 		}
-		case CAPTUREDEVIDE_TYPE::AUDIO: {
+		case CAPTUREDEVIDE_TYPE::Audio: {
 			BYTE *sampleBuf = nullptr;
 			DWORD length = 0;
 			u32 sizeAfterResample = 0;
@@ -453,7 +473,7 @@ WindowsCaptureDevice::WindowsCaptureDevice(CAPTUREDEVIDE_TYPE _type) :
 	case CAPTUREDEVIDE_TYPE::VIDEO:
 		targetMediaParam = defaultVideoParam;
 		break;
-	case CAPTUREDEVIDE_TYPE::AUDIO:
+	case CAPTUREDEVIDE_TYPE::Audio:
 		targetMediaParam = defaultAudioParam;
 		break;
 	}
@@ -469,7 +489,7 @@ WindowsCaptureDevice::~WindowsCaptureDevice() {
 		av_freep(&imageRGB);
 		av_freep(&imageJpeg);
 		break;
-	case CAPTUREDEVIDE_TYPE::AUDIO:
+	case CAPTUREDEVIDE_TYPE::Audio:
 		av_freep(&resampleBuf);
 		break;
 	}
@@ -617,7 +637,7 @@ bool WindowsCaptureDevice::start(void *startParam) {
 				break;
 			}
 
-			case CAPTUREDEVIDE_TYPE::AUDIO: {
+			case CAPTUREDEVIDE_TYPE::Audio: {
 				if (startParam) {
 					std::vector<u32> *micParam = static_cast<std::vector<u32>*>(startParam);
 					targetMediaParam.sampleRate = micParam->at(0);
@@ -803,7 +823,7 @@ HRESULT WindowsCaptureDevice::setDeviceParam(IMFMediaType *pType) {
 			hr = GetDefaultStride(pType, &deviceParam.default_stride);
 
 		break;
-	case CAPTUREDEVIDE_TYPE::AUDIO:
+	case CAPTUREDEVIDE_TYPE::Audio:
 		hr = pType->GetGUID(MF_MT_SUBTYPE, &subtype);
 		if (FAILED(hr))
 			break;
@@ -892,7 +912,7 @@ void WindowsCaptureDevice::messageHandler() {
 
 	if (type == CAPTUREDEVIDE_TYPE::VIDEO) {
 		SetCurrentThreadName("Camera");
-	} else if (type == CAPTUREDEVIDE_TYPE::AUDIO) {
+	} else if (type == CAPTUREDEVIDE_TYPE::Audio) {
 		SetCurrentThreadName("Microphone");
 	}
 
@@ -949,7 +969,7 @@ HRESULT WindowsCaptureDevice::enumDevices() {
 			);
 
 			break;
-		case CAPTUREDEVIDE_TYPE::AUDIO:
+		case CAPTUREDEVIDE_TYPE::Audio:
 			hr = pAttributes->SetGUID(
 				MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
 				MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_AUDCAP_GUID

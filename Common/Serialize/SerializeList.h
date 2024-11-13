@@ -27,9 +27,8 @@ void DoList(PointerWrap &p, std::list<T> &x, T &default_val) {
 	Do(p, list_size);
 	x.resize(list_size, default_val);
 
-	typename std::list<T>::iterator itr, end;
-	for (itr = x.begin(), end = x.end(); itr != end; ++itr)
-		Do(p, *itr);
+	for (T &elem : x)
+		Do(p, elem);
 }
 
 template<class T>
@@ -75,7 +74,7 @@ void DoLinkedList(PointerWrap &p, LinkedListItem<T> *&list_start, LinkedListItem
 			}
 		} else {
 			if (shouldExist != 0) {
-				WARN_LOG(SAVESTATE, "Savestate failure: incorrect item marker %d", shouldExist);
+				WARN_LOG(Log::SaveState, "Savestate failure: incorrect item marker %d", shouldExist);
 				p.SetError(p.ERROR_FAILURE);
 			}
 			if (p.mode == PointerWrap::MODE_READ) {

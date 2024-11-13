@@ -122,9 +122,7 @@ public:
 		if (program) {
 			glDeleteProgram(program);
 		}
-		if (locData_) {
-			delete locData_;
-		}
+		delete locData_;
 	}
 	struct Semantic {
 		int location;
@@ -376,14 +374,6 @@ public:
 	void DeletePushBuffer(GLPushBuffer *pushbuffer) {
 		_dbg_assert_(pushbuffer != nullptr);
 		deleter_.pushBuffers.push_back(pushbuffer);
-	}
-
-	void BeginPushBuffer(GLPushBuffer *pushbuffer) {
-		pushbuffer->Begin();
-	}
-
-	void EndPushBuffer(GLPushBuffer *pushbuffer) {
-		pushbuffer->End();
 	}
 
 	bool IsInRenderPass() const {
@@ -834,6 +824,7 @@ public:
 		}
 	}
 
+	void StartThread();  // Currently only used on iOS, since we fully recreate the context on Android
 	void StopThread();
 
 	bool SawOutOfMemory() {
@@ -849,6 +840,10 @@ public:
 	// destroyed.
 	void SetSkipGLCalls() {
 		skipGLCalls_ = true;
+	}
+
+	int GetNumSteps() const {
+		return (int)steps_.size();
 	}
 
 private:
@@ -873,6 +868,7 @@ private:
 	FastVec<GLRInitStep> initSteps_;
 
 	// Execution time state
+	// TODO: Rename this, as we don't actually use a compile thread on OpenGL.
 	bool runCompileThread_ = true;
 
 	// Thread is managed elsewhere, and should call ThreadFrame.

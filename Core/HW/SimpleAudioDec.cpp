@@ -67,20 +67,17 @@ public:
 	}
 	~MiniMp3Audio() {}
 
-	bool Decode(const uint8_t* inbuf, int inbytes, int *inbytesConsumed, uint8_t *outbuf, int *outbytes) override {
+	bool Decode(const uint8_t* inbuf, int inbytes, int *inbytesConsumed, int outputChannels, int16_t *outbuf, int *outSamples) override {
+		_dbg_assert_(outputChannels == 2);
+
 		mp3dec_frame_info_t info{};
 		int samplesWritten = mp3dec_decode_frame(&mp3_, inbuf, inbytes, (mp3d_sample_t *)outbuf, &info);
 		*inbytesConsumed = info.frame_bytes;
-		*outbytes = samplesWritten * sizeof(mp3d_sample_t) * info.channels;
-		outSamples_ = samplesWritten * info.channels;
+		*outSamples = samplesWritten;
 		return true;
 	}
 
 	bool IsOK() const override { return true; }
-	int GetOutSamples() const override {
-		return outSamples_;
-	}
-
 	void SetChannels(int channels) override {
 		// Hmm. ignore for now.
 	}
@@ -90,8 +87,6 @@ public:
 private:
 	// We use the lowest-level API.
 	mp3dec_t mp3_{};
-	int outSamples_ = 0;
-	int srcPos_ = 0;
 };
 
 // FFMPEG-based decoder. TODO: Replace with individual codecs.
@@ -101,17 +96,13 @@ public:
 	FFmpegAudioDecoder(PSPAudioType audioType, int sampleRateHz = 44100, int channels = 2);
 	~FFmpegAudioDecoder();
 
-	bool Decode(const uint8_t* inbuf, int inbytes, int *inbytesConsumed, uint8_t *outbuf, int *outbytes) override;
+	bool Decode(const uint8_t* inbuf, int inbytes, int *inbytesConsumed, int outputChannels, int16_t *outbuf, int *outSamples) override;
 	bool IsOK() const override {
 #ifdef USE_FFMPEG
 		return codec_ != 0;
 #else
 		return 0;
 #endif
-	}
-
-	int GetOutSamples() const override {
-		return outSamples_;
 	}
 
 	void SetChannels(int channels) override;
@@ -125,7 +116,6 @@ private:
 	PSPAudioType audioType;
 	int sample_rate_;
 	int channels_;
-	int outSamples_ = 0; // output samples per frame
 
 	AVFrame *frame_ = nullptr;
 	AVCodec *codec_ = nullptr;
@@ -182,23 +172,23 @@ FFmpegAudioDecoder::FFmpegAudioDecoder(PSPAudioType audioType, int sampleRateHz,
 
 	frame_ = av_frame_alloc();
 
-	// Get Audio Codec ctx
+	// Get AUDIO Codec ctx
 	int audioCodecId = GetAudioCodecID(audioType);
 	if (!audioCodecId) {
-		ERROR_LOG(ME, "This version of FFMPEG does not support Audio codec type: %08x. Update your submodule.", audioType);
+		ERROR_LOG(Log::ME, "This version of FFMPEG does not support Audio codec type: %08x. Update your submodule.", audioType);
 		return;
 	}
 	// Find decoder
 	codec_ = avcodec_find_decoder((AVCodecID)audioCodecId);
 	if (!codec_) {
 		// Eh, we shouldn't even have managed to compile. But meh.
-		ERROR_LOG(ME, "This version of FFMPEG does not support AV_CODEC_ctx for audio (%s). Update your submodule.", GetCodecName(audioType));
+		ERROR_LOG(Log::ME, "This version of FFMPEG does not support AV_CODEC_ctx for audio (%s). Update your submodule.", GetCodecName(audioType));
 		return;
 	}
 	// Allocate codec context
 	codecCtx_ = avcodec_alloc_context3(codec_);
 	if (!codecCtx_) {
-		ERROR_LOG(ME, "Failed to allocate a codec context");
+		ERROR_LOG(Log::ME, "Failed to allocate a codec context");
 		return;
 	}
 	codecCtx_->channels = channels_;
@@ -219,7 +209,7 @@ bool FFmpegAudioDecoder::OpenCodec(int block_align) {
 	AVDictionary *opts = 0;
 	int retval = avcodec_open2(codecCtx_, codec_, &opts);
 	if (retval < 0) {
-		ERROR_LOG(ME, "Failed to open codec: retval = %i", retval);
+		ERROR_LOG(Log::ME, "Failed to open codec: retval = %i", retval);
 	}
 	av_dict_free(&opts);
 	codecOpen_ = true;
@@ -237,7 +227,7 @@ void FFmpegAudioDecoder::SetChannels(int channels) {
 #ifdef USE_FFMPEG
 
 	if (codecOpen_) {
-		ERROR_LOG(ME, "Codec already open, cannot change channels");
+		ERROR_LOG(Log::ME, "Codec already open, cannot change channels");
 	} else {
 		channels_ = channels;
 		codecCtx_->channels = channels_;
@@ -264,7 +254,7 @@ FFmpegAudioDecoder::~FFmpegAudioDecoder() {
 }
 
 // Decodes a single input frame.
-bool FFmpegAudioDecoder::Decode(const uint8_t *inbuf, int inbytes, int *inbytesConsumed, uint8_t *outbuf, int *outbytes) {
+bool FFmpegAudioDecoder::Decode(const uint8_t *inbuf, int inbytes, int *inbytesConsumed, int outputChannels, int16_t *outbuf, int *outSamples) {
 #ifdef USE_FFMPEG
 	if (!codecOpen_) {
 		OpenCodec(inbytes);
@@ -278,13 +268,17 @@ bool FFmpegAudioDecoder::Decode(const uint8_t *inbuf, int inbytes, int *inbytesC
 	int got_frame = 0;
 	av_frame_unref(frame_);
 
-	*outbytes = 0;
-	*inbytesConsumed = 0;
+	if (outSamples) {
+		*outSamples = 0;
+	}
+	if (inbytesConsumed) {
+		*inbytesConsumed = 0;
+	}
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
 	if (inbytes != 0) {
 		int err = avcodec_send_packet(codecCtx_, &packet);
 		if (err < 0) {
-			ERROR_LOG(ME, "Error sending audio frame to decoder (%d bytes): %d (%08x)", inbytes, err, err);
+			ERROR_LOG(Log::ME, "Error sending audio frame to decoder (%d bytes): %d (%08x)", inbytes, err, err);
 			return false;
 		}
 	}
@@ -306,7 +300,7 @@ bool FFmpegAudioDecoder::Decode(const uint8_t *inbuf, int inbytes, int *inbytesC
 #endif
 
 	if (len < 0) {
-		ERROR_LOG(ME, "Error decoding Audio frame (%i bytes): %i (%08x)", inbytes, len, len);
+		ERROR_LOG(Log::ME, "Error decoding Audio frame (%i bytes): %i (%08x)", inbytes, len, len);
 		return false;
 	}
 	
@@ -315,6 +309,7 @@ bool FFmpegAudioDecoder::Decode(const uint8_t *inbuf, int inbytes, int *inbytesC
 
 	if (got_frame) {
 		// Initializing the sample rate convert. We will use it to convert float output into int.
+		_dbg_assert_(outputChannels == 2);
 		int64_t wanted_channel_layout = AV_CH_LAYOUT_STEREO; // we want stereo output layout
 		int64_t dec_channel_layout = frame_->channel_layout; // decoded channel layout
 
@@ -331,7 +326,7 @@ bool FFmpegAudioDecoder::Decode(const uint8_t *inbuf, int inbytes, int *inbytesC
 				NULL);
 
 			if (!swrCtx_ || swr_init(swrCtx_) < 0) {
-				ERROR_LOG(ME, "swr_init: Failed to initialize the resampling context");
+				ERROR_LOG(Log::ME, "swr_init: Failed to initialize the resampling context");
 				avcodec_close(codecCtx_);
 				codec_ = 0;
 				return false;
@@ -341,17 +336,14 @@ bool FFmpegAudioDecoder::Decode(const uint8_t *inbuf, int inbytes, int *inbytesC
 		// convert audio to AV_SAMPLE_FMT_S16
 		int swrRet = 0;
 		if (outbuf != nullptr) {
-			swrRet = swr_convert(swrCtx_, &outbuf, frame_->nb_samples, (const u8 **)frame_->extended_data, frame_->nb_samples);
+			swrRet = swr_convert(swrCtx_, (uint8_t **)&outbuf, frame_->nb_samples, (const u8 **)frame_->extended_data, frame_->nb_samples);
 		}
 		if (swrRet < 0) {
-			ERROR_LOG(ME, "swr_convert: Error while converting: %d", swrRet);
+			ERROR_LOG(Log::ME, "swr_convert: Error while converting: %d", swrRet);
 			return false;
 		}
-		// output samples per frame, we should *2 since we have two channels
-		outSamples_ = swrRet * 2;
-
-		// each sample occupies 2 bytes
-		*outbytes = outSamples_ * 2;
+		// output stereo samples per frame
+		*outSamples = swrRet;
 
 		// Save outbuf into pcm audio, you can uncomment this line to save and check the decoded audio into pcm file.
 		// SaveAudio("dump.pcm", outbuf, *outbytes);
@@ -436,7 +428,9 @@ u32 AuCtx::AuDecode(u32 pcmAddr) {
 			nextSync = (int)FindNextMp3Sync();
 		}
 		int inbytesConsumed = 0;
-		decoder->Decode(&sourcebuff[nextSync], (int)sourcebuff.size() - nextSync, &inbytesConsumed, outbuf, &outpcmbufsize);
+		int outSamples = 0;
+		decoder->Decode(&sourcebuff[nextSync], (int)sourcebuff.size() - nextSync, &inbytesConsumed, 2, (int16_t *)outbuf, &outSamples);
+		outpcmbufsize = outSamples * 2 * sizeof(int16_t);
 
 		if (outpcmbufsize == 0) {
 			// Nothing was output, hopefully we're at the end of the stream.
@@ -444,7 +438,7 @@ u32 AuCtx::AuDecode(u32 pcmAddr) {
 			sourcebuff.clear();
 		} else {
 			// Update our total decoded samples, but don't count stereo.
-			SumDecodedSamples += decoder->GetOutSamples() / 2;
+			SumDecodedSamples += outSamples;
 			// get consumed source length
 			int srcPos = inbytesConsumed + nextSync;
 			// remove the consumed source
@@ -605,7 +599,7 @@ void AuCtx::DoState(PointerWrap &p) {
 	Do(p, Channels);
 	Do(p, MaxOutputSample);
 	Do(p, readPos);
-	int audioType = (int)decoder->GetAudioType();
+	int audioType = decoder ? (int)decoder->GetAudioType() : 0;
 	Do(p, audioType);
 	Do(p, BitRate);
 	Do(p, SamplingRate);

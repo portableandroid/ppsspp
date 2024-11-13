@@ -43,7 +43,7 @@ void PSPDialog::InitCommon() {
 	UpdateCommon();
 
 	if (GetCommonParam() && GetCommonParam()->language != g_Config.GetPSPLanguage()) {
-		WARN_LOG(SCEUTILITY, "Game requested language %d, ignoring and using user language", GetCommonParam()->language);
+		WARN_LOG(Log::sceUtility, "Game requested language %d, ignoring and using user language", GetCommonParam()->language);
 	}
 }
 
@@ -205,8 +205,7 @@ void PSPDialog::FinishFadeOut() {
 	ChangeStatus(SCE_UTILITY_STATUS_FINISHED, 0);
 }
 
-u32 PSPDialog::CalcFadedColor(u32 inColor)
-{
+u32 PSPDialog::CalcFadedColor(u32 inColor) const {
 	u32 alpha = inColor >> 24;
 	alpha = alpha * fadeValue / 255;
 	return (inColor & 0x00FFFFFF) | (alpha << 24);

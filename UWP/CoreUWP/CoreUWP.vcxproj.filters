@@ -555,6 +555,9 @@
     <ClCompile Include="..\..\Core\MIPS\MIPSVFPUUtils.cpp">
       <Filter>MIPS</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\Core\MIPS\MIPSTracer.cpp">
+      <Filter>MIPS</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\Core\Dialog\PSPDialog.cpp">
       <Filter>Dialog</Filter>
     </ClCompile>
@@ -1199,6 +1202,12 @@
     <ClCompile Include="..\..\Core\Util\MemStick.cpp">
       <Filter>Util</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\Core\HLE\AtracCtx.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Core\HLE\AtracCtx2.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -1618,6 +1627,9 @@
     <ClInclude Include="..\..\Core\MIPS\MIPSVFPUUtils.h">
       <Filter>MIPS</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\Core\MIPS\MIPSTracer.h">
+      <Filter>MIPS</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\Core\Dialog\PSPDialog.h">
       <Filter>Dialog</Filter>
     </ClInclude>
@@ -1881,6 +1893,12 @@
     <ClInclude Include="..\..\Core\HLE\sceSircs.h" />
     <ClInclude Include="..\..\Core\Util\MemStick.h">
       <Filter>Util</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\HLE\AtracCtx.h">
+      <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\HLE\AtracCtx2.h">
+      <Filter>HLE</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

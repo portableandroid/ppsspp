@@ -84,7 +84,7 @@ double ExecCPUTest(bool clearCache = true) {
 		JitBlockCacheDebugInterface *cache = MIPSComp::jit->GetBlockCacheDebugInterface();
 		if (cache) {
 			JitBlockDebugInfo block = cache->GetBlockDebugInfo(0);
-			WARN_LOG(JIT, "Executed %d target instrs, %d IR, for %d orig", (int)block.targetDisasm.size(), (int)block.irDisasm.size(), (int)block.origDisasm.size());
+			WARN_LOG(Log::JIT, "Executed %d target instrs, %d IR, for %d orig", (int)block.targetDisasm.size(), (int)block.irDisasm.size(), (int)block.origDisasm.size());
 		}
 
 		if (clearCache)
@@ -197,8 +197,10 @@ bool TestJit() {
 		ir_speed = ExecCPUTest();
 		mipsr4k.UpdateCore(CPUCore::JIT);
 		jit_speed = ExecCPUTest();
+#if !PPSSPP_PLATFORM(MAC)
 		mipsr4k.UpdateCore(CPUCore::JIT_IR);
 		jit_ir_speed = ExecCPUTest(false);
+#endif
 
 		// Disassemble
 		JitBlockCacheDebugInterface *cache = MIPSComp::jit->GetBlockCacheDebugInterface();

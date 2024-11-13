@@ -42,8 +42,7 @@
 
 TransformUnit::TransformUnit() {
 	decoded_ = (u8 *)AllocateAlignedMemory(TRANSFORM_BUF_SIZE, 16);
-	if (!decoded_)
-		return;
+	_assert_(decoded_);
 	binner_ = new BinManager();
 }
 
@@ -835,7 +834,7 @@ void TransformUnit::SubmitPrimitive(const void* vertices, const void* indices, G
 		}
 
 	default:
-		ERROR_LOG(G3D, "Unexpected prim type: %d", prim_type);
+		ERROR_LOG(Log::G3D, "Unexpected prim type: %d", prim_type);
 		break;
 	}
 }
@@ -950,11 +949,11 @@ bool TransformUnit::GetCurrentSimpleVertices(int count, std::vector<GPUDebugVert
 				}
 				break;
 			case GE_VTYPE_IDX_32BIT:
-				WARN_LOG_REPORT_ONCE(simpleIndexes32, G3D, "SimpleVertices: Decoding 32-bit indexes");
+				WARN_LOG_REPORT_ONCE(simpleIndexes32, Log::G3D, "SimpleVertices: Decoding 32-bit indexes");
 				for (int i = 0; i < count; ++i) {
 					// These aren't documented and should be rare.  Let's bounds check each one.
 					if (inds32[i] != (u16)inds32[i]) {
-						ERROR_LOG_REPORT_ONCE(simpleIndexes32Bounds, G3D, "SimpleVertices: Index outside 16-bit range");
+						ERROR_LOG_REPORT_ONCE(simpleIndexes32Bounds, Log::G3D, "SimpleVertices: Index outside 16-bit range");
 					}
 					indices[i] = (u16)inds32[i];
 				}

@@ -141,12 +141,12 @@ void PopupMultiChoice::ChoiceCallback(int num) {
 		UI::EventParams e{};
 		e.v = this;
 		e.a = num;
+		e.b = PostChoiceCallback(num);
 		OnChoice.Trigger(e);
 
 		if (restoreFocus_) {
 			SetFocusedView(this);
 		}
-		PostChoiceCallback(num);
 	}
 }
 
@@ -248,9 +248,9 @@ std::string PopupSliderChoice::ValueText() const {
 	char temp[256];
 	temp[0] = '\0';
 	if (zeroLabel_.size() && *value_ == 0) {
-		truncate_cpy(temp, zeroLabel_.c_str());
+		truncate_cpy(temp, zeroLabel_);
 	} else if (negativeLabel_.size() && *value_ < 0) {
-		truncate_cpy(temp, negativeLabel_.c_str());
+		truncate_cpy(temp, negativeLabel_);
 	} else {
 		// Would normally be dangerous to have user-controlled format strings!
 		// However, let's check that there's only one % sign, and that it's not followed by an S.
@@ -290,7 +290,7 @@ std::string PopupSliderChoiceFloat::ValueText() const {
 	char temp[256];
 	temp[0] = '\0';
 	if (zeroLabel_.size() && *value_ == 0.0f) {
-		truncate_cpy(temp, zeroLabel_.c_str());
+		truncate_cpy(temp, zeroLabel_);
 	} else if (IsValidNumberFormatString(fmt_)) {
 		snprintf(temp, sizeof(temp), fmt_.c_str(), *value_);
 	} else {
@@ -528,7 +528,7 @@ EventReturn PopupTextInputChoice::HandleClick(EventParams &e) {
 
 	// Choose method depending on platform capabilities.
 	if (System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
-		System_InputBoxGetString(token_, text_, *value_ , [=](const std::string &enteredValue, int) {
+		System_InputBoxGetString(token_, text_, *value_, passwordMasking_, [=](const std::string &enteredValue, int) {
 			*value_ = StripSpaces(enteredValue);
 			EventParams params{};
 			OnChange.Trigger(params);
@@ -537,6 +537,10 @@ EventReturn PopupTextInputChoice::HandleClick(EventParams &e) {
 	}
 
 	TextEditPopupScreen *popupScreen = new TextEditPopupScreen(value_, placeHolder_, ChopTitle(text_), maxLen_);
+	popupScreen->SetPasswordMasking(passwordMasking_);
+	if (System_GetPropertyBool(SYSPROP_KEYBOARD_IS_SOFT)) {
+		popupScreen->SetAlignTop(true);
+	}
 	popupScreen->OnChange.Handle(this, &PopupTextInputChoice::HandleChange);
 	if (e.v)
 		popupScreen->SetPopupOrigin(e.v);
@@ -567,6 +571,7 @@ void TextEditPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	edit_ = new TextEdit(textEditValue_, Title(), placeholder_, new LinearLayoutParams(1.0f));
 	edit_->SetMaxLen(maxLen_);
 	edit_->SetTextColor(dc.theme->popupStyle.fgColor);
+	edit_->SetPasswordMasking(passwordMasking_);
 	lin->Add(edit_);
 
 	UI::SetFocusedView(edit_);
@@ -593,7 +598,7 @@ void AbstractChoiceWithValueDisplay::GetContentDimensionsBySpec(const UIContext 
 	Bounds availBounds(0, 0, availWidth, vert.size);
 
 	float valueW, valueH;
-	dc.MeasureTextRect(dc.theme->uiFont, scale, scale, valueText.c_str(), (int)valueText.size(), availBounds, &valueW, &valueH, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
+	dc.MeasureTextRect(dc.theme->uiFont, scale, scale, valueText, availBounds, &valueW, &valueH, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
 	valueW += paddingX;
 
 	// Give the choice itself less space to grow in, so it shrinks if needed.
@@ -625,20 +630,20 @@ void AbstractChoiceWithValueDisplay::Draw(UIContext &dc) {
 
 	std::string valueText = ValueText();
 
-	if (passwordDisplay_) {
+	if (passwordMasking_) {
 		// Replace all characters with stars.
 		memset(&valueText[0], '*', valueText.size());
 	}
 
 	// If there is a label, assume we want at least 20% of the size for it, at a minimum.
 
-	if (!text_.empty()) {
+	if (!text_.empty() && !hideTitle_) {
 		float availWidth = (bounds_.w - paddingX * 2) * 0.8f;
 		float scale = CalculateValueScale(dc, valueText, availWidth);
 
 		float w, h;
 		Bounds availBounds(0, 0, availWidth, bounds_.h);
-		dc.MeasureTextRect(dc.theme->uiFont, scale, scale, valueText.c_str(), (int)valueText.size(), availBounds, &w, &h, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
+		dc.MeasureTextRect(dc.theme->uiFont, scale, scale, valueText, availBounds, &w, &h, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
 		textPadding_.right = w + paddingX;
 
 		Choice::Draw(dc);
@@ -648,21 +653,21 @@ void AbstractChoiceWithValueDisplay::Draw(UIContext &dc) {
 		}
 		dc.SetFontScale(scale, scale);
 		Bounds valueBounds(bounds_.x2() - textPadding_.right - imagePadding, bounds_.y, w, bounds_.h);
-		dc.DrawTextRect(valueText.c_str(), valueBounds, style.fgColor, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
+		dc.DrawTextRect(valueText, valueBounds, style.fgColor, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
 		dc.SetFontScale(1.0f, 1.0f);
 	} else {
 		Choice::Draw(dc);
 		float scale = CalculateValueScale(dc, valueText, bounds_.w);
 		dc.SetFontScale(scale, scale);
-		dc.DrawTextRect(valueText.c_str(), bounds_.Expand(-paddingX, 0.0f), style.fgColor, ALIGN_LEFT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
+		dc.DrawTextRect(valueText, bounds_.Expand(-paddingX, 0.0f), style.fgColor, ALIGN_LEFT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
 		dc.SetFontScale(1.0f, 1.0f);
 	}
 }
 
-float AbstractChoiceWithValueDisplay::CalculateValueScale(const UIContext &dc, const std::string &valueText, float availWidth) const {
+float AbstractChoiceWithValueDisplay::CalculateValueScale(const UIContext &dc, std::string_view valueText, float availWidth) const {
 	float actualWidth, actualHeight;
 	Bounds availBounds(0, 0, availWidth, bounds_.h);
-	dc.MeasureTextRect(dc.theme->uiFont, 1.0f, 1.0f, valueText.c_str(), (int)valueText.size(), availBounds, &actualWidth, &actualHeight);
+	dc.MeasureTextRect(dc.theme->uiFont, 1.0f, 1.0f, valueText, availBounds, &actualWidth, &actualHeight);
 	if (actualWidth > availWidth) {
 		return std::max(0.8f, availWidth / actualWidth);
 	}

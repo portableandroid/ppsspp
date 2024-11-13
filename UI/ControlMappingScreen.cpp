@@ -69,7 +69,7 @@ private:
 	UI::EventReturn OnReplace(UI::EventParams &params);
 	UI::EventReturn OnReplaceAll(UI::EventParams &params);
 
-	void MappedCallback(const MultiInputMapping &key);
+	void MappedCallback(const MultiInputMapping &kdf);
 
 	enum Action {
 		NONE,
@@ -82,7 +82,7 @@ private:
 	UI::Choice *replaceAllButton_ = nullptr;
 	std::vector<UI::View *> rows_;
 	Action action_ = NONE;
-	int actionIndex_;
+	int actionIndex_ = 0;
 	int pspKey_;
 	std::string keyName_;
 	ScreenManager *scrm_;
@@ -97,15 +97,16 @@ void SingleControlMapper::Refresh() {
 	Clear();
 	auto mc = GetI18NCategory(I18NCat::MAPPABLECONTROLS);
 
-	std::map<std::string, ImageID> keyImages;
-	keyImages["Circle"] = ImageID("I_CIRCLE");
-	keyImages["Cross"] = ImageID("I_CROSS");
-	keyImages["Square"] = ImageID("I_SQUARE");
-	keyImages["Triangle"] = ImageID("I_TRIANGLE");
-	keyImages["Start"] = ImageID("I_START");
-	keyImages["Select"] = ImageID("I_SELECT");
-	keyImages["L"] = ImageID("I_L");
-	keyImages["R"] = ImageID("I_R");
+	std::map<std::string, ImageID> keyImages = {
+		{ "Circle",   ImageID("I_CIRCLE")   },
+		{ "Cross",    ImageID("I_CROSS")    },
+		{ "Square",   ImageID("I_SQUARE")   },
+		{ "Triangle", ImageID("I_TRIANGLE") },
+		{ "Start",    ImageID("I_START")    },
+		{ "Select",   ImageID("I_SELECT")   },
+		{ "L",        ImageID("I_L")        },
+		{ "R",        ImageID("I_R")        }
+	};
 
 	using namespace UI;
 
@@ -123,7 +124,7 @@ void SingleControlMapper::Refresh() {
 		replaceAllButton_ = new Choice(iter->second, new LinearLayoutParams(leftColumnWidth, itemH));
 	} else {
 		// No image? Let's translate.
-		replaceAllButton_ = new Choice(mc->T(keyName_.c_str()), new LinearLayoutParams(leftColumnWidth, itemH));
+		replaceAllButton_ = new Choice(mc->T(keyName_), new LinearLayoutParams(leftColumnWidth, itemH));
 		replaceAllButton_->SetCentered(true);
 	}
 	root->Add(replaceAllButton_)->OnClick.Handle(this, &SingleControlMapper::OnReplaceAll);
@@ -156,7 +157,7 @@ void SingleControlMapper::Refresh() {
 		d->OnClick.Handle(this, &SingleControlMapper::OnDelete);
 	}
 
-	if (mappings.size() == 0) {
+	if (mappings.empty()) {
 		// look like an empty line
 		Choice *c = rightColumn->Add(new Choice("", new LinearLayoutParams(FILL_PARENT, itemH)));
 		c->OnClick.Handle(this, &SingleControlMapper::OnAdd);
@@ -234,6 +235,21 @@ UI::EventReturn SingleControlMapper::OnDelete(UI::EventParams &params) {
 	return UI::EVENT_DONE;
 }
 
+
+struct BindingCategory {
+	const char *catName;
+	int firstKey;
+};
+
+// Category name, first input from psp_button_names.
+static const BindingCategory cats[] = {
+	{"Standard PSP controls", CTRL_UP},
+	{"Control modifiers", VIRTKEY_ANALOG_ROTATE_CW},
+	{"Emulator controls", VIRTKEY_FASTFORWARD},
+	{"Extended PSP controls", VIRTKEY_AXIS_RIGHT_Y_MAX},
+	{},  // sentinel
+};
+
 void ControlMappingScreen::CreateViews() {
 	using namespace UI;
 	mappers_.clear();
@@ -278,25 +294,12 @@ void ControlMappingScreen::CreateViews() {
 	size_t numMappableKeys = 0;
 	const KeyMap::KeyMap_IntStrPair *mappableKeys = KeyMap::GetMappableKeys(&numMappableKeys);
 
-	struct Cat {
-		const char *catName;
-		int firstKey;
-		bool *open;
-	};
-	// Category name, first input from psp_button_names.
-	static const Cat cats[] = {
-		{"Standard PSP controls", CTRL_UP, &categoryToggles_[0]},
-		{"Control modifiers", VIRTKEY_ANALOG_ROTATE_CW, &categoryToggles_[1]},
-		{"Emulator controls", VIRTKEY_FASTFORWARD, &categoryToggles_[2]},
-		{"Extended PSP controls", VIRTKEY_AXIS_RIGHT_Y_MAX, &categoryToggles_[3]},
-	};
-
 	int curCat = -1;
 	CollapsibleSection *curSection = nullptr;
 	for (size_t i = 0; i < numMappableKeys; i++) {
 		if (curCat < (int)ARRAY_SIZE(cats) && mappableKeys[i].key == cats[curCat + 1].firstKey) {
 			if (curCat >= 0) {
-				curSection->SetOpenPtr(cats[curCat].open);
+				curSection->SetOpenPtr(&categoryToggles_[curCat]);
 			}
 			curCat++;
 			curSection = rightColumn->Add(new CollapsibleSection(km->T(cats[curCat].catName)));
@@ -309,8 +312,9 @@ void ControlMappingScreen::CreateViews() {
 		mappers_.push_back(mapper);
 	}
 	if (curCat >= 0 && curSection) {
-		curSection->SetOpenPtr(cats[curCat].open);
+		curSection->SetOpenPtr(&categoryToggles_[curCat]);
 	}
+	_dbg_assert_(curCat == ARRAY_SIZE(cats) - 2);  // count the sentinel
 
 	keyMapGeneration_ = KeyMap::g_controllerMapGeneration;
 }
@@ -339,7 +343,7 @@ UI::EventReturn ControlMappingScreen::OnAutoConfigure(UI::EventParams &params) {
 }
 
 void ControlMappingScreen::dialogFinished(const Screen *dialog, DialogResult result) {
-	if (result == DR_OK && std::string(dialog->tag()) == "listpopup") {
+	if (result == DR_OK && !strcmp(dialog->tag(), "listpopup")) {
 		UI::ListPopupScreen *popup = (UI::ListPopupScreen *)dialog;
 		KeyMap::AutoConfForPad(popup->GetChoiceString());
 	}
@@ -604,7 +608,7 @@ UI::EventReturn AnalogSetupScreen::OnResetToDefaults(UI::EventParams &e) {
 
 class Backplate : public UI::InertView {
 public:
-	Backplate(float scale, UI::LayoutParams *layoutParams = nullptr) : InertView(layoutParams), scale_(scale) {}
+	explicit Backplate(float scale, UI::LayoutParams *layoutParams = nullptr) : InertView(layoutParams), scale_(scale) {}
 
 	void Draw(UIContext &dc) override {
 		for (float dy = 0.0f; dy <= 4.0f; dy += 1.0f) {
@@ -678,7 +682,7 @@ protected:
 
 class MockScreen : public UI::InertView {
 public:
-	MockScreen(UI::LayoutParams *layoutParams = nullptr) : InertView(layoutParams) {
+	explicit MockScreen(UI::LayoutParams *layoutParams = nullptr) : InertView(layoutParams) {
 	}
 
 	void Draw(UIContext &dc) override {
@@ -726,8 +730,8 @@ public:
 		return this;
 	}
 
-	MockButton *SetFlipHBG(float f) {
-		flipHBG_ = f;
+	MockButton *SetFlipHBG(bool b) {
+		flipHBG_ = b;
 		return this;
 	}
 
@@ -746,7 +750,7 @@ public:
 		return selectedButton_ && *selectedButton_ == button_;
 	}
 
-	int Button() {
+	int Button() const {
 		return button_;
 	}
 
@@ -772,7 +776,7 @@ class MockPSP : public UI::AnchorLayout {
 public:
 	static constexpr float SCALE = 1.4f;
 
-	MockPSP(UI::LayoutParams *layoutParams = nullptr);
+	explicit MockPSP(UI::LayoutParams *layoutParams = nullptr);
 	void SelectButton(int btn);
 	void FocusButton(int btn);
 	void NotifyPressed(int btn);

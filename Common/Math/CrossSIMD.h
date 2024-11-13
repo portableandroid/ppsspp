@@ -58,7 +58,7 @@ static inline float32x4_t vmlaq_laneq_f32(float32x4_t a, float32x4_t b, float32x
 	}
 }
 
-inline uint32x4_t vcgezq_f32(float32x4_t v) {
+static inline uint32x4_t vcgezq_f32(float32x4_t v) {
 	return vcgeq_f32(v, vdupq_n_f32(0.0f));
 }
 

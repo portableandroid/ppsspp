@@ -62,11 +62,6 @@ DrawEngineVulkan::DrawEngineVulkan(Draw::DrawContext *draw)
 	: draw_(draw) {
 	decOptions_.expandAllWeightsToFloat = false;
 	decOptions_.expand8BitNormalsToFloat = false;
-#if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
-	decOptions_.alignOutputToWord = true;
-#endif
-
-	indexGen.Setup(decIndex_);
 }
 
 void DrawEngineVulkan::InitDeviceObjects() {
@@ -171,6 +166,10 @@ void DrawEngineVulkan::DeviceRestore(Draw::DrawContext *draw) {
 void DrawEngineVulkan::BeginFrame() {
 	lastPipeline_ = nullptr;
 
+	// These will be re-bound if needed, let's not let old bindings linger around too long.
+	boundDepal_ = VK_NULL_HANDLE;
+	boundSecondary_ = VK_NULL_HANDLE;
+
 	// pushUBO is the thin3d push pool, don't need to BeginFrame again.
 	pushVertex_->BeginFrame();
 	pushIndex_->BeginFrame();
@@ -178,11 +177,15 @@ void DrawEngineVulkan::BeginFrame() {
 	tessDataTransferVulkan->SetPushPool(pushUBO_);
 
 	DirtyAllUBOs();
+
+	AssertEmpty();
 }
 
 void DrawEngineVulkan::EndFrame() {
 	stats_.pushVertexSpaceUsed = (int)pushVertex_->GetUsedThisFrame();
 	stats_.pushIndexSpaceUsed = (int)pushIndex_->GetUsedThisFrame();
+
+	AssertEmpty();
 }
 
 void DrawEngineVulkan::DirtyAllUBOs() {
@@ -216,6 +219,8 @@ void DrawEngineVulkan::Invalidate(InvalidationCallbackFlags flags) {
 void DrawEngineVulkan::DoFlush() {
 	VulkanRenderManager *renderManager = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 
+	renderManager->AssertInRenderPass();
+
 	PROFILE_THIS_SCOPE("Flush");
 
 	bool tess = gstate_c.submitType == SubmitType::HW_BEZIER || gstate_c.submitType == SubmitType::HW_SPLINE;
@@ -233,12 +238,17 @@ void DrawEngineVulkan::DoFlush() {
 
 	GEPrimitiveType prim = prevPrim_;
 
-	// Always use software for flat shading to fix the provoking index.
-	bool useHWTransform = CanUseHardwareTransform(prim) && (tess || gstate.getShadeMode() != GE_SHADE_FLAT);
+	// Always use software for flat shading to fix the provoking index
+	// if the provoking vertex extension is not available.
+	bool provokingVertexOk = (tess || gstate.getShadeMode() != GE_SHADE_FLAT);
+	if (renderManager->GetVulkanContext()->GetDeviceFeatures().enabled.provokingVertex.provokingVertexLast) {
+		provokingVertexOk = true;
+	}
+	bool useHWTransform = CanUseHardwareTransform(prim) && provokingVertexOk;
 
 	uint32_t ibOffset;
 	uint32_t vbOffset;
-	
+
 	// The optimization to avoid indexing isn't really worth it on Vulkan since it means creating more pipelines.
 	// This could be avoided with the new dynamic state extensions, but not available enough on mobile.
 	const bool forceIndexed = draw_->GetDeviceCaps().verySlowShaderCompiler;
@@ -390,6 +400,8 @@ void DrawEngineVulkan::DoFlush() {
 		gpuStats.numUncachedVertsDrawn += vertexCount;
 		prim = IndexGenerator::GeneralPrim((GEPrimitiveType)drawInds_[0].prim);
 
+		// At this point, the output is always an index triangle/line/point list, no strips/fans.
+
 		u16 *inds = decIndex_;
 		SoftwareTransformResult result{};
 		SoftwareTransformParams params{};
@@ -402,7 +414,14 @@ void DrawEngineVulkan::DoFlush() {
 		// do not respect scissor rects.
 		params.allowClear = framebufferManager_->UseBufferedRendering();
 		params.allowSeparateAlphaClear = false;
-		params.provokeFlatFirst = true;
+
+		if (gstate.getShadeMode() == GE_SHADE_FLAT) {
+			if (!renderManager->GetVulkanContext()->GetDeviceFeatures().enabled.provokingVertex.provokingVertexLast) {
+				// If we can't have the hardware do it, we need to rotate the index buffer to simulate a different provoking vertex.
+				// We do this before line expansion etc.
+				IndexBufferProvokingLastToFirst(prim, inds, vertexCount);
+			}
+		}
 		params.flippedY = true;
 		params.usesHalfZ = true;
 
@@ -440,7 +459,7 @@ void DrawEngineVulkan::DoFlush() {
 
 		// Only here, where we know whether to clear or to draw primitives, should we actually set the current framebuffer! Because that gives use the opportunity
 		// to use a "pre-clear" render pass, for high efficiency on tilers.
-		if (result.action == SW_DRAW_PRIMITIVES) {
+		if (result.action == SW_DRAW_INDEXED) {
 			if (textureNeedsApply) {
 				gstate_c.pixelMapped = result.pixelMapped;
 				textureCache_->ApplyTexture();
@@ -517,16 +536,10 @@ void DrawEngineVulkan::DoFlush() {
 
 			PROFILE_THIS_SCOPE("renderman_q");
 
-			if (result.drawIndexed) {
-				VkBuffer vbuf, ibuf;
-				vbOffset = (uint32_t)pushVertex_->Push(result.drawBuffer, numDecodedVerts_ * sizeof(TransformedVertex), 4, &vbuf);
-				ibOffset = (uint32_t)pushIndex_->Push(inds, sizeof(short) * result.drawNumTrans, 4, &ibuf);
-				renderManager->DrawIndexed(descSetIndex, ARRAY_SIZE(dynamicUBOOffsets), dynamicUBOOffsets, vbuf, vbOffset, ibuf, ibOffset, result.drawNumTrans, 1);
-			} else {
-				VkBuffer vbuf;
-				vbOffset = (uint32_t)pushVertex_->Push(result.drawBuffer, result.drawNumTrans * sizeof(TransformedVertex), 4, &vbuf);
-				renderManager->Draw(descSetIndex, ARRAY_SIZE(dynamicUBOOffsets), dynamicUBOOffsets, vbuf, vbOffset, result.drawNumTrans);
-			}
+			VkBuffer vbuf, ibuf;
+			vbOffset = (uint32_t)pushVertex_->Push(result.drawBuffer, numDecodedVerts_ * sizeof(TransformedVertex), 4, &vbuf);
+			ibOffset = (uint32_t)pushIndex_->Push(inds, sizeof(short) * result.drawNumTrans, 4, &ibuf);
+			renderManager->DrawIndexed(descSetIndex, ARRAY_SIZE(dynamicUBOOffsets), dynamicUBOOffsets, vbuf, vbOffset, ibuf, ibOffset, result.drawNumTrans, 1);
 		} else if (result.action == SW_CLEAR) {
 			// Note: we won't get here if the clear is alpha but not color, or color but not alpha.
 			bool clearColor = gstate.isClearModeColorMask();

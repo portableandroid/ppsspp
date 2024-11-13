@@ -35,18 +35,26 @@ static const char *ppsspp_app_id = "423397985041383434";
 #ifdef ENABLE_DISCORD
 // No context argument? What?
 static void handleDiscordError(int errCode, const char *message) {
-	ERROR_LOG(SYSTEM, "Discord error code %d: '%s'", errCode, message);
+	ERROR_LOG(Log::System, "Discord error code %d: '%s'", errCode, message);
 }
 #endif
 
 Discord::~Discord() {
 	if (initialized_) {
-		ERROR_LOG(SYSTEM, "Discord destructor running though g_Discord.Shutdown() has not been called.");
+		ERROR_LOG(Log::System, "Discord destructor running though g_Discord.Shutdown() has not been called.");
 	}
 }
 
+bool Discord::IsAvailable() {
+#ifdef ENABLE_DISCORD
+	return true;
+#else
+	return false;
+#endif
+}
+
 bool Discord::IsEnabled() const {
-	return g_Config.bDiscordPresence;
+	return g_Config.bDiscordRichPresence;
 }
 
 void Discord::Init() {
@@ -57,7 +65,7 @@ void Discord::Init() {
 	DiscordEventHandlers eventHandlers{};
 	eventHandlers.errored = &handleDiscordError;
 	Discord_Initialize(ppsspp_app_id, &eventHandlers, 0, nullptr);
-	INFO_LOG(SYSTEM, "Discord connection initialized");
+	INFO_LOG(Log::System, "Discord connection initialized");
 #endif
 
 	initialized_ = true;

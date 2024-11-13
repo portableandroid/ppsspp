@@ -44,6 +44,11 @@ VK_DEFINE_HANDLE(VmaAllocation);
 
 std::string VulkanVendorString(uint32_t vendorId);
 
+template<class R, class T> inline void ChainStruct(R &root, T *newStruct) {
+	newStruct->pNext = root.pNext;
+	root.pNext = newStruct;
+}
+
 // Not all will be usable on all platforms, of course...
 enum WindowSystem {
 #ifdef _WIN32
@@ -181,13 +186,17 @@ public:
 
 	int GetBestPhysicalDevice();
 	int GetPhysicalDeviceByName(const std::string &name);
-	void ChooseDevice(int physical_device);
+
+	// Convenience method to avoid code duplication.
+	// If it returns false, delete the context.
+	bool CreateInstanceAndDevice(const CreateInfo &info);
 
 	// The coreVersion is to avoid enabling extensions that are merged into core Vulkan from a certain version.
 	bool EnableInstanceExtension(const char *extension, uint32_t coreVersion);
 	bool EnableDeviceExtension(const char *extension, uint32_t coreVersion);
 
-	VkResult CreateDevice();
+	// Was previously two functions, ChooseDevice and CreateDevice.
+	VkResult CreateDevice(int physical_device);
 
 	const std::string &InitError() const { return init_error_; }
 
@@ -275,6 +284,7 @@ public:
 		VkPhysicalDeviceMultiviewFeatures multiview;
 		VkPhysicalDevicePresentWaitFeaturesKHR presentWait;
 		VkPhysicalDevicePresentIdFeaturesKHR presentId;
+		VkPhysicalDeviceProvokingVertexFeaturesEXT provokingVertex;
 	};
 
 	const PhysicalDeviceProps &GetPhysicalDeviceProperties(int i = -1) const {
@@ -350,6 +360,7 @@ public:
 		// out of MAX_INFLIGHT_FRAMES.
 		return inflightFrames_;
 	}
+
 	// Don't call while a frame is in progress.
 	void UpdateInflightFrames(int n);
 
@@ -404,6 +415,14 @@ public:
 		return frame_[curFrame_].deleteList.GetLastDeleteCount();
 	}
 
+	u32 InstanceApiVersion() const {
+		return vulkanInstanceApiVersion_;
+	}
+
+	u32 DeviceApiVersion() const {
+		return vulkanDeviceApiVersion_;
+	}
+
 private:
 	bool ChooseQueue();
 
@@ -431,7 +450,8 @@ private:
 	VkDevice device_ = VK_NULL_HANDLE;
 	VkQueue gfx_queue_ = VK_NULL_HANDLE;
 	VkSurfaceKHR surface_ = VK_NULL_HANDLE;
-	u32 vulkanApiVersion_ = 0;
+	u32 vulkanInstanceApiVersion_ = 0;
+	u32 vulkanDeviceApiVersion_ = 0;
 
 	std::string init_error_;
 	std::vector<const char *> instance_layer_names_;
@@ -518,6 +538,7 @@ const char *VulkanPresentModeToString(VkPresentModeKHR presentMode);
 const char *VulkanImageLayoutToString(VkImageLayout imageLayout);
 
 std::string FormatDriverVersion(const VkPhysicalDeviceProperties &props);
+std::string FormatAPIVersion(u32 version);
 
 // Simple heuristic.
 bool IsHashMaliDriverVersion(const VkPhysicalDeviceProperties &props);

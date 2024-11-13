@@ -28,7 +28,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "mathematics.h"
 #include "get_bits.h"
 #include "atrac3plus.h"
 #include "atrac3plus_data.h"
@@ -40,6 +39,34 @@ static VLC ct_vlc_tabs[4];
 static VLC spec_vlc_tabs[112];
 static VLC gain_vlc_tabs[11];
 static VLC tone_vlc_tabs[7];
+
+static const uint8_t ff_logg2_tab[256] = {
+    0,0,1,1,2,2,2,2,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+    5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+    6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+    6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
+};
+
+// todo: Replace with clz type instructions.
+int av_log2(unsigned int v)
+{
+    int n = 0;
+    if (v & 0xffff0000) {
+        v >>= 16;
+        n += 16;
+    }
+    if (v & 0xff00) {
+        v >>= 8;
+        n += 8;
+    }
+    n += ff_logg2_tab[v];
+
+    return n;
+}
 
 /**
  * Generate canonical VLC table from given descriptor.
@@ -809,21 +836,21 @@ static void decode_qu_spectra(GetBitContext *gb, const Atrac3pSpecCodeTab *tab,
     int bits       = tab->bits;
     int is_signed  = tab->is_signed;
     unsigned val;
+    const unsigned bitmask = ((1 << bits) - 1);  // mask to clear higher bits.
 
     for (pos = 0; pos < num_specs;) {
         if (group_size == 1 || get_bits1(gb)) {
             for (j = 0; j < group_size; j++) {
                 val = get_vlc2(gb, vlc_tab->table, vlc_tab->bits, 1);
-
                 for (i = 0; i < num_coeffs; i++) {
-                    cf = av_mod_uintp2(val, bits);
+                    cf = val & bitmask;
                     if (is_signed)
                         cf = sign_extend(cf, bits);
                     else if (cf && get_bits1(gb))
                         cf = -cf;
 
                     out[pos++] = cf;
-                    val      >>= bits;
+                    val >>= bits;
                 }
             }
         } else /* group skipped */

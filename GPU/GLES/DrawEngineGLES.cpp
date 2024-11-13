@@ -67,8 +67,6 @@ DrawEngineGLES::DrawEngineGLES(Draw::DrawContext *draw) : inputLayoutMap_(16), d
 	decOptions_.expandAllWeightsToFloat = false;
 	decOptions_.expand8BitNormalsToFloat = false;
 
-	indexGen.Setup(decIndex_);
-
 	InitDeviceObjects();
 
 	tessDataTransferGLES = new TessellationDataTransferGLES(render_);
@@ -150,16 +148,16 @@ void DrawEngineGLES::ClearInputLayoutMap() {
 
 void DrawEngineGLES::BeginFrame() {
 	FrameData &frameData = frameData_[render_->GetCurFrame()];
-	render_->BeginPushBuffer(frameData.pushIndex);
-	render_->BeginPushBuffer(frameData.pushVertex);
+	frameData.pushIndex->Begin();
+	frameData.pushVertex->Begin();
 
 	lastRenderStepId_ = -1;
 }
 
 void DrawEngineGLES::EndFrame() {
 	FrameData &frameData = frameData_[render_->GetCurFrame()];
-	render_->EndPushBuffer(frameData.pushIndex);
-	render_->EndPushBuffer(frameData.pushVertex);
+	frameData.pushIndex->End();
+	frameData.pushVertex->End();
 	tessDataTransferGLES->EndFrame();
 }
 
@@ -356,7 +354,6 @@ void DrawEngineGLES::DoFlush() {
 		params.texCache = textureCache_;
 		params.allowClear = true;  // Clear in OpenGL respects scissor rects, so we'll use it.
 		params.allowSeparateAlphaClear = true;
-		params.provokeFlatFirst = false;
 		params.flippedY = framebufferManager_->UseBufferedRendering();
 		params.usesHalfZ = false;
 
@@ -375,7 +372,7 @@ void DrawEngineGLES::DoFlush() {
 		if (gl_extensions.IsGLES && !gl_extensions.GLES3) {
 			constexpr int vertexCountLimit = 0x10000 / 3;
 			if (vertexCount > vertexCountLimit) {
-				WARN_LOG_REPORT_ONCE(manyVerts, G3D, "Truncating vertex count from %d to %d", vertexCount, vertexCountLimit);
+				WARN_LOG_REPORT_ONCE(manyVerts, Log::G3D, "Truncating vertex count from %d to %d", vertexCount, vertexCountLimit);
 				vertexCount = vertexCountLimit;
 			}
 		}
@@ -415,18 +412,12 @@ void DrawEngineGLES::DoFlush() {
 			goto bail;
 		}
 
-		if (result.action == SW_DRAW_PRIMITIVES) {
-			if (result.drawIndexed) {
-				vertexBufferOffset = (uint32_t)frameData.pushVertex->Push(result.drawBuffer, numDecodedVerts_ * sizeof(TransformedVertex), 4, &vertexBuffer);
-				indexBufferOffset = (uint32_t)frameData.pushIndex->Push(inds, sizeof(uint16_t) * result.drawNumTrans, 2, &indexBuffer);
-				render_->DrawIndexed(
-					softwareInputLayout_, vertexBuffer, vertexBufferOffset, indexBuffer, indexBufferOffset,
-					glprim[prim], result.drawNumTrans, GL_UNSIGNED_SHORT);
-			} else {
-				vertexBufferOffset = (uint32_t)frameData.pushVertex->Push(result.drawBuffer, result.drawNumTrans * sizeof(TransformedVertex), 4, &vertexBuffer);
-				render_->Draw(
-					softwareInputLayout_, vertexBuffer, vertexBufferOffset, glprim[prim], 0, result.drawNumTrans);
-			}
+		if (result.action == SW_DRAW_INDEXED) {
+			vertexBufferOffset = (uint32_t)frameData.pushVertex->Push(result.drawBuffer, numDecodedVerts_ * sizeof(TransformedVertex), 4, &vertexBuffer);
+			indexBufferOffset = (uint32_t)frameData.pushIndex->Push(inds, sizeof(uint16_t) * result.drawNumTrans, 2, &indexBuffer);
+			render_->DrawIndexed(
+				softwareInputLayout_, vertexBuffer, vertexBufferOffset, indexBuffer, indexBufferOffset,
+				glprim[prim], result.drawNumTrans, GL_UNSIGNED_SHORT);
 		} else if (result.action == SW_CLEAR) {
 			u32 clearColor = result.color;
 			float clearDepth = result.depth;

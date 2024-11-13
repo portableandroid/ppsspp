@@ -44,6 +44,7 @@ DrawEngineCommon::DrawEngineCommon() : decoderMap_(16) {
 	transformedExpanded_ = (TransformedVertex *)AllocateMemoryPages(3 * TRANSFORMED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	decoded_ = (u8 *)AllocateMemoryPages(DECODED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	decIndex_ = (u16 *)AllocateMemoryPages(DECODED_INDEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
+	indexGen.Setup(decIndex_);
 }
 
 DrawEngineCommon::~DrawEngineCommon() {
@@ -170,10 +171,10 @@ void DrawEngineCommon::DispatchSubmitImm(GEPrimitiveType prim, TransformedVertex
 	// TODO: Handle fog and secondary color somehow?
 
 	if (gstate.isFogEnabled() && !gstate.isModeThrough()) {
-		WARN_LOG_REPORT_ONCE(geimmfog, G3D, "Imm vertex used fog");
+		WARN_LOG_REPORT_ONCE(geimmfog, Log::G3D, "Imm vertex used fog");
 	}
 	if (color1Used != 0 && gstate.isUsingSecondaryColor() && !gstate.isModeThrough()) {
-		WARN_LOG_REPORT_ONCE(geimmcolor1, G3D, "Imm vertex used secondary color");
+		WARN_LOG_REPORT_ONCE(geimmcolor1, Log::G3D, "Imm vertex used secondary color");
 	}
 
 	bool prevThrough = gstate.isModeThrough();
@@ -595,11 +596,11 @@ bool DrawEngineCommon::GetCurrentSimpleVertices(int count, std::vector<GPUDebugV
 				}
 				break;
 			case GE_VTYPE_IDX_32BIT:
-				WARN_LOG_REPORT_ONCE(simpleIndexes32, G3D, "SimpleVertices: Decoding 32-bit indexes");
+				WARN_LOG_REPORT_ONCE(simpleIndexes32, Log::G3D, "SimpleVertices: Decoding 32-bit indexes");
 				for (int i = 0; i < count; ++i) {
 					// These aren't documented and should be rare.  Let's bounds check each one.
 					if (inds32[i] != (u16)inds32[i]) {
-						ERROR_LOG_REPORT_ONCE(simpleIndexes32Bounds, G3D, "SimpleVertices: Index outside 16-bit range");
+						ERROR_LOG_REPORT_ONCE(simpleIndexes32Bounds, Log::G3D, "SimpleVertices: Index outside 16-bit range");
 					}
 					indices[i] = (u16)inds32[i];
 				}
@@ -806,6 +807,8 @@ int DrawEngineCommon::ComputeNumVertsToDecode() const {
 	return sum;
 }
 
+// Takes a list of consecutive PRIM opcodes, and extends the current draw call to include them.
+// This is just a performance optimization.
 int DrawEngineCommon::ExtendNonIndexedPrim(const uint32_t *cmd, const uint32_t *stall, u32 vertTypeID, bool clockwise, int *bytesRead, bool isTriangle) {
 	const uint32_t *start = cmd;
 	int prevDrawVerts = numDrawVerts_ - 1;
@@ -971,7 +974,6 @@ bool DrawEngineCommon::SubmitPrim(const void *verts, const void *inds, GEPrimiti
 
 void DrawEngineCommon::DecodeVerts(u8 *dest) {
 	// Note that this should be able to continue a partial decode - we don't necessarily start from zero here (although we do most of the time).
-
 	int i = decodeVertsCounter_;
 	int stride = (int)dec_->GetDecVtxFmt().stride;
 	for (; i < numDrawVerts_; i++) {
@@ -981,6 +983,12 @@ void DrawEngineCommon::DecodeVerts(u8 *dest) {
 		drawVertexOffsets_[i] = numDecodedVerts_ - indexLowerBound;
 
 		int indexUpperBound = dv.indexUpperBound;
+
+		if (indexUpperBound + 1 - indexLowerBound + numDecodedVerts_ >= VERTEX_BUFFER_MAX) {
+			// Hit our limit! Stop decoding in this draw.
+			break;
+		}
+
 		// Decode the verts (and at the same time apply morphing/skinning). Simple.
 		dec_->DecodeVerts(dest + numDecodedVerts_ * stride, dv.verts, &dv.uvScale, indexLowerBound, indexUpperBound);
 		numDecodedVerts_ += indexUpperBound - indexLowerBound + 1;

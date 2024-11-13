@@ -91,7 +91,7 @@ void CalculateDisplayOutputRect(FRect *rc, float origW, float origH, const FRect
 		// Automatically set aspect ratio to match the display, IF the rotation matches the output display ratio! Otherwise, just
 		// sets standard aspect ratio because actually stretching will just look silly.
 		bool globalRotated = g_display.rotation == DisplayRotation::ROTATE_90 || g_display.rotation == DisplayRotation::ROTATE_270;
-		if (rotated == g_display.dp_yres > g_display.dp_xres) {
+		if (rotated == (g_display.dp_yres > g_display.dp_xres)) {
 			origRatio = frameRatio;
 		} else {
 			origRatio *= aspectRatioAdjust;
@@ -257,7 +257,7 @@ bool PresentationCommon::UpdatePostShader() {
 				stereoShaderInfo_ = new ShaderInfo(*stereoShaderInfo);
 			}
 		} else {
-			WARN_LOG(G3D, "Failed to get info about stereo shader '%s'", g_Config.sStereoToMonoShader.c_str());
+			WARN_LOG(Log::G3D, "Failed to get info about stereo shader '%s'", g_Config.sStereoToMonoShader.c_str());
 		}
 	}
 
@@ -335,7 +335,7 @@ bool PresentationCommon::CompilePostShader(const ShaderInfo *shaderInfo, Draw::P
 		std::string errorString = vsError + "\n" + fsError;
 		// DO NOT turn this into an ERROR_LOG_REPORT, as it will pollute our logs with all kinds of
 		// user shader experiments.
-		ERROR_LOG(FRAMEBUF, "Failed to build post-processing program from %s and %s!\n%s", shaderInfo->vertexShaderFile.c_str(), shaderInfo->fragmentShaderFile.c_str(), errorString.c_str());
+		ERROR_LOG(Log::FrameBuf, "Failed to build post-processing program from %s and %s!\n%s", shaderInfo->vertexShaderFile.c_str(), shaderInfo->fragmentShaderFile.c_str(), errorString.c_str());
 		ShowPostShaderError(errorString);
 		return false;
 	}
@@ -572,7 +572,7 @@ Draw::ShaderModule *PresentationCommon::CompileShaderModule(ShaderStage stage, S
 	if (lang != lang_) {
 		// Gonna have to upconvert the shader.
 		if (!TranslateShader(&translated, lang_, draw_->GetShaderLanguageDesc(), nullptr, src, lang, stage, errorString)) {
-			ERROR_LOG(FRAMEBUF, "Failed to translate post-shader. Error string: '%s'\nSource code:\n%s\n", errorString->c_str(), src.c_str());
+			ERROR_LOG(Log::FrameBuf, "Failed to translate post-shader. Error string: '%s'\nSource code:\n%s\n", errorString->c_str(), src.c_str());
 			return nullptr;
 		}
 	}

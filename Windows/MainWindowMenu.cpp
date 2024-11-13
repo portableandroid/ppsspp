@@ -19,8 +19,8 @@
 #include "Common/System/Request.h"
 #include "Common/File/FileUtil.h"
 #include "Common/Log.h"
-#include "Common/LogManager.h"
-#include "Common/ConsoleListener.h"
+#include "Common/Log/LogManager.h"
+#include "Common/Log/ConsoleListener.h"
 #include "Common/OSVersion.h"
 #include "Common/GPU/Vulkan/VulkanLoader.h"
 #include "Common/StringUtils.h"
@@ -107,7 +107,6 @@ namespace MainWindow {
 		EnableMenuItem(menu, ID_DEBUG_LOADSYMFILE, menuEnable);
 		EnableMenuItem(menu, ID_DEBUG_SAVESYMFILE, menuEnable);
 		EnableMenuItem(menu, ID_DEBUG_RESETSYMBOLTABLE, menuEnable);
-		EnableMenuItem(menu, ID_DEBUG_TAKESCREENSHOT, menuEnable);
 		EnableMenuItem(menu, ID_DEBUG_SHOWDEBUGSTATISTICS, menuInGameEnable);
 		EnableMenuItem(menu, ID_DEBUG_EXTRACTFILE, menuEnable);
 		EnableMenuItem(menu, ID_DEBUG_MEMORYBASE, menuInGameEnable);
@@ -237,6 +236,7 @@ namespace MainWindow {
 		TranslateMenuItem(menu, ID_DEBUG_TAKESCREENSHOT, g_Config.bSystemControls ? L"\tF12" : L"");
 		TranslateMenuItem(menu, ID_DEBUG_DUMPNEXTFRAME);
 		TranslateMenuItem(menu, ID_DEBUG_SHOWDEBUGSTATISTICS);
+		TranslateMenuItem(menu, ID_DEBUG_RESTARTGRAPHICS);
 		TranslateMenuItem(menu, ID_DEBUG_DISASSEMBLY, g_Config.bSystemControls ? L"\tCtrl+D" : L"");
 		TranslateMenuItem(menu, ID_DEBUG_GEDEBUGGER, g_Config.bSystemControls ? L"\tCtrl+G" : L"");
 		TranslateMenuItem(menu, ID_DEBUG_EXTRACTFILE);

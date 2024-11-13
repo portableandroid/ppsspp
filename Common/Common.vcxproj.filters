@@ -5,10 +5,8 @@
     <ClInclude Include="Common.h" />
     <ClInclude Include="CommonFuncs.h" />
     <ClInclude Include="CommonTypes.h" />
-    <ClInclude Include="ConsoleListener.h" />
     <ClInclude Include="CPUDetect.h" />
     <ClInclude Include="Log.h" />
-    <ClInclude Include="LogManager.h" />
     <ClInclude Include="MemArena.h" />
     <ClInclude Include="MemoryUtil.h" />
     <ClInclude Include="StringUtils.h" />
@@ -551,26 +549,29 @@
     <ClInclude Include="..\ext\at3_standalone\intreadwrite.h">
       <Filter>ext\at3_standalone</Filter>
     </ClInclude>
-    <ClInclude Include="..\ext\at3_standalone\mathematics.h">
-      <Filter>ext\at3_standalone</Filter>
-    </ClInclude>
     <ClInclude Include="..\ext\at3_standalone\at3_decoders.h">
       <Filter>ext\at3_standalone</Filter>
     </ClInclude>
     <ClInclude Include="..\ext\at3_standalone\mem.h">
       <Filter>ext\at3_standalone</Filter>
     </ClInclude>
-    <ClInclude Include="..\ext\at3_standalone\sinewin.h">
-      <Filter>ext\at3_standalone</Filter>
+    <ClInclude Include="Render\Text\draw_text_cocoa.h">
+      <Filter>Render\Text</Filter>
+    </ClInclude>
+    <ClInclude Include="Log\StdioListener.h" />
+    <ClInclude Include="Log\ConsoleListener.h">
+      <Filter>Log</Filter>
+    </ClInclude>
+    <ClInclude Include="Log\LogManager.h">
+      <Filter>Log</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ABI.cpp" />
-    <ClCompile Include="ConsoleListener.cpp" />
+    <ClCompile Include="Log\StdioListener.cpp" />
     <ClCompile Include="CPUDetect.cpp" />
     <ClCompile Include="FakeCPUDetect.cpp" />
     <ClCompile Include="MipsCPUDetect.cpp" />
-    <ClCompile Include="LogManager.cpp" />
     <ClCompile Include="MemoryUtil.cpp" />
     <ClCompile Include="StringUtils.cpp" />
     <ClCompile Include="Thunk.cpp" />
@@ -993,6 +994,9 @@
     <ClCompile Include="Data\Collections\FastVec.h">
       <Filter>Data\Collections</Filter>
     </ClCompile>
+    <ClCompile Include="Data\Collections\CyclicBuffer.h">
+      <Filter>Data\Collections</Filter>
+    </ClCompile>
     <ClCompile Include="GPU\GPUBackendCommon.cpp">
       <Filter>GPU</Filter>
     </ClCompile>
@@ -1032,19 +1036,10 @@
     <ClCompile Include="..\ext\at3_standalone\atrac3plusdsp.cpp">
       <Filter>ext\at3_standalone</Filter>
     </ClCompile>
-    <ClCompile Include="..\ext\at3_standalone\float_dsp.cpp">
-      <Filter>ext\at3_standalone</Filter>
-    </ClCompile>
     <ClCompile Include="..\ext\at3_standalone\mem.cpp">
       <Filter>ext\at3_standalone</Filter>
     </ClCompile>
-    <ClCompile Include="..\ext\at3_standalone\sinewin.cpp">
-      <Filter>ext\at3_standalone</Filter>
-    </ClCompile>
     <ClCompile Include="..\ext\at3_standalone\atrac.cpp">
-      <Filter>ext\at3_standalone</Filter>
-    </ClCompile>
-    <ClCompile Include="..\ext\at3_standalone\mathematics.cpp">
       <Filter>ext\at3_standalone</Filter>
     </ClCompile>
     <ClCompile Include="..\ext\at3_standalone\fft.cpp">
@@ -1055,6 +1050,12 @@
     </ClCompile>
     <ClCompile Include="..\ext\at3_standalone\compat.cpp">
       <Filter>ext\at3_standalone</Filter>
+    </ClCompile>
+    <ClCompile Include="Log\ConsoleListener.cpp">
+      <Filter>Log</Filter>
+    </ClCompile>
+    <ClCompile Include="Log\LogManager.cpp">
+      <Filter>Log</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -1172,6 +1173,9 @@
     <Filter Include="ext\at3_standalone">
       <UniqueIdentifier>{586da66e-922a-4479-9dac-9d608a1b9183}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Log">
+      <UniqueIdentifier>{cb2c7c09-1177-4a1e-962c-5cc7bcb56789}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <Text Include="..\ext\libpng17\CMakeLists.txt">
@@ -1214,6 +1218,9 @@
     </None>
     <None Include="..\ext\basis_universal\basisu_transcoder_tables_pvrtc2_alpha_33.inc">
       <Filter>ext\basis_universal</Filter>
+    </None>
+    <None Include="Render\Text\draw_text_cocoa.mm">
+      <Filter>Render\Text</Filter>
     </None>
   </ItemGroup>
 </Project>

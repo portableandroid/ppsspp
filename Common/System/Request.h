@@ -84,8 +84,8 @@ extern RequestManager g_requestManager;
 // Wrappers for easy requests.
 // NOTE: Semantics have changed - this no longer calls the callback on cancellation, instead you
 // can specify a different callback for that.
-inline void System_InputBoxGetString(RequesterToken token, std::string_view title, std::string_view defaultValue, RequestCallback callback, RequestFailedCallback failedCallback = nullptr) {
-	g_requestManager.MakeSystemRequest(SystemRequestType::INPUT_TEXT_MODAL, token, callback, failedCallback, title, defaultValue, 0);
+inline void System_InputBoxGetString(RequesterToken token, std::string_view title, std::string_view defaultValue, bool passwordMasking, RequestCallback callback, RequestFailedCallback failedCallback = nullptr) {
+	g_requestManager.MakeSystemRequest(SystemRequestType::INPUT_TEXT_MODAL, token, callback, failedCallback, title, defaultValue, passwordMasking ? 1 : 0);
 }
 
 // This one will pop up a special image browser if available. You can also pick
@@ -160,8 +160,12 @@ inline void System_ShareText(std::string_view text) {
 	g_requestManager.MakeSystemRequest(SystemRequestType::SHARE_TEXT, NO_REQUESTER_TOKEN, nullptr, nullptr, text, "", 0);
 }
 
-inline void System_NotifyUIState(std::string_view state) {
-	g_requestManager.MakeSystemRequest(SystemRequestType::NOTIFY_UI_STATE, NO_REQUESTER_TOKEN, nullptr, nullptr, state, "", 0);
+inline void System_NotifyUIEvent(UIEventNotification notification) {
+	g_requestManager.MakeSystemRequest(SystemRequestType::NOTIFY_UI_EVENT, NO_REQUESTER_TOKEN, nullptr, nullptr, "", "", (int64_t)notification, 0);
+}
+
+inline void System_SetKeepScreenBright(bool keepScreenBright) {
+	g_requestManager.MakeSystemRequest(SystemRequestType::SET_KEEP_SCREEN_BRIGHT, NO_REQUESTER_TOKEN, nullptr, nullptr, "", "", (int64_t)keepScreenBright);
 }
 
 inline void System_SetWindowTitle(std::string_view param) {

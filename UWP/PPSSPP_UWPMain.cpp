@@ -18,13 +18,12 @@
 #include "Common/DirectXHelper.h"
 #include "Common/File/FileUtil.h"
 #include "Common/Log.h"
-#include "Common/LogManager.h"
+#include "Common/Log/LogManager.h"
 #include "Common/TimeUtil.h"
 #include "Common/StringUtils.h"
 #include "Common/System/Display.h"
 #include "Common/System/NativeApp.h"
 #include "Common/System/Request.h"
-#include "Common/OSVersion.h"
 
 #include "Core/System.h"
 #include "Core/Loaders.h"
@@ -65,6 +64,8 @@ PPSSPP_UWPMain::PPSSPP_UWPMain(App ^app, const std::shared_ptr<DX::DeviceResourc
 	app_(app),
 	m_deviceResources(deviceResources)
 {
+	TimeInit();
+
 	// Register to be notified if the Device is lost or recreated
 	m_deviceResources->RegisterDeviceNotify(this);
 
@@ -312,7 +313,9 @@ std::string System_GetProperty(SystemProperty prop) {
 	static bool hasCheckedGPUDriverVersion = false;
 	switch (prop) {
 	case SYSPROP_NAME:
-		return GetWindowsVersion();
+		return GetSystemName();
+	case SYSPROP_SYSTEMBUILD:
+		return GetWindowsBuild();
 	case SYSPROP_LANGREGION:
 		return GetLangRegion();
 	case SYSPROP_CLIPBOARD_TEXT:
@@ -406,6 +409,7 @@ void System_Toast(std::string_view str) {}
 
 bool System_GetPropertyBool(SystemProperty prop) {
 	switch (prop) {
+	case SYSPROP_HAS_TEXT_CLIPBOARD:
 	case SYSPROP_HAS_OPEN_DIRECTORY:
 	{
 		return !IsXBox();
@@ -520,7 +524,7 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 			// 'ChooseFile' will added '*' by default when there are no extensions assigned
 			break;
 		default:
-			ERROR_LOG(FILESYS, "Unexpected BrowseFileType: %d", param3);
+			ERROR_LOG(Log::FileSystem, "Unexpected BrowseFileType: %d", param3);
 			return false;
 		}
 
@@ -548,21 +552,23 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 			});
 		return true;
 	}
-	case SystemRequestType::NOTIFY_UI_STATE:
+	case SystemRequestType::NOTIFY_UI_EVENT:
 	{
-		if (!param1.empty()) {
-			if (!strcmp(param1.c_str(), "menu")) {
-				CloseLaunchItem();
-			}
-			else if (!strcmp(param1.c_str(), "popup_closed")) {
-				DeactivateTextEditInput();
-			}
-			else if (!strcmp(param1.c_str(), "text_gotfocus")) {
-				ActivateTextEditInput(true);
-			}
-			else if (!strcmp(param1.c_str(), "text_lostfocus")) {
-				DeactivateTextEditInput(true);
-			}
+		switch ((UIEventNotification)param3) {
+		case UIEventNotification::MENU_RETURN:
+			CloseLaunchItem();
+			break;
+		case UIEventNotification::POPUP_CLOSED:
+			DeactivateTextEditInput();
+			break;
+		case UIEventNotification::TEXT_GOTFOCUS:
+			ActivateTextEditInput(true);
+			break;
+		case UIEventNotification::TEXT_LOSTFOCUS:
+			DeactivateTextEditInput(true);
+			break;
+		default:
+			break;
 		}
 		return true;
 	}
@@ -650,7 +656,7 @@ std::string GetCPUBrandString() {
 	}
 	catch (const std::exception & e) {
 		const char* what = e.what();
-		INFO_LOG(SYSTEM, "%s", what);
+		INFO_LOG(Log::System, "%s", what);
 	}
 
 	if (cpu_id != nullptr) {
@@ -672,7 +678,7 @@ std::string GetCPUBrandString() {
 		}
 		catch (const std::exception & e) {
 			const char* what = e.what();
-			INFO_LOG(SYSTEM, "%s", what);
+			INFO_LOG(Log::System, "%s", what);
 		}
 	}
 

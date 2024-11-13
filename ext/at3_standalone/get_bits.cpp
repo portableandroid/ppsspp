@@ -33,7 +33,6 @@
 
 #include "compat.h"
 #include "mem.h"
-#include "mathematics.h"
 #include "get_bits.h"
 
 static const uint8_t ff_reverse[256] = {
@@ -88,7 +87,7 @@ static int alloc_table(VLC *vlc, int size, int use_static)
             vlc->table_size = 0;
             return AVERROR(ENOMEM);
         }
-        memset(vlc->table + vlc->table_allocated - (1 << vlc->bits), 0, sizeof(VLC_TYPE) * 2 << vlc->bits);
+        memset(vlc->table + vlc->table_allocated - (unsigned int)(1UL << vlc->bits), 0, sizeof(VLC_TYPE) * 2 << vlc->bits);
     }
     return index;
 }
@@ -318,7 +317,6 @@ int ff_init_vlc_sparse(VLC *vlc_arg, int nb_bits, int nb_codes,
     }
     return 0;
 }
-
 
 void ff_free_vlc(VLC *vlc)
 {

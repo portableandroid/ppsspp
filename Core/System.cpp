@@ -67,7 +67,6 @@
 #include "Core/PSPLoaders.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/SaveState.h"
-#include "Common/LogManager.h"
 #include "Common/ExceptionHandlerSetup.h"
 #include "Core/HLE/sceAudiocodec.h"
 #include "GPU/GPUState.h"
@@ -128,17 +127,8 @@ void UpdateUIState(GlobalUIState newState) {
 	if (globalUIState != newState && globalUIState != UISTATE_EXIT) {
 		globalUIState = newState;
 		System_Notify(SystemNotification::DISASSEMBLY);
-		const char *state = nullptr;
-		switch (globalUIState) {
-		case UISTATE_EXIT: state = "exit";  break;
-		case UISTATE_INGAME: state = "ingame"; break;
-		case UISTATE_MENU: state = "menu"; break;
-		case UISTATE_PAUSEMENU: state = "pausemenu"; break;
-		case UISTATE_EXCEPTION: state = "exception"; break;
-		}
-		if (state) {
-			System_NotifyUIState(state);
-		}
+		System_Notify(SystemNotification::UI_STATE_CHANGED);
+		System_SetKeepScreenBright(globalUIState == UISTATE_INGAME);
 	}
 }
 
@@ -264,6 +254,7 @@ bool CPU_Init(std::string *errorString, FileLoader *loadedFile) {
 	if (!g_CoreParameter.mountIso.empty()) {
 		g_CoreParameter.mountIsoLoader = ConstructFileLoader(g_CoreParameter.mountIso);
 	}
+	g_CoreParameter.fileType = type;
 
 	MIPSAnalyst::Reset();
 	Replacement_Init();
@@ -280,12 +271,12 @@ bool CPU_Init(std::string *errorString, FileLoader *loadedFile) {
 	case IdentifiedFileType::PSP_PBP:
 	case IdentifiedFileType::PSP_PBP_DIRECTORY:
 		// This is normal for homebrew.
-		// ERROR_LOG(LOADER, "PBP directory resolution failed.");
+		// ERROR_LOG(Log::Loader, "PBP directory resolution failed.");
 		InitMemoryForGamePBP(loadedFile);
 		break;
 	case IdentifiedFileType::PSP_ELF:
 		if (Memory::g_PSPModel != PSP_MODEL_FAT) {
-			INFO_LOG(LOADER, "ELF, using full PSP-2000 memory access");
+			INFO_LOG(Log::Loader, "ELF, using full PSP-2000 memory access");
 			Memory::g_MemorySize = Memory::RAM_DOUBLE_SIZE;
 		}
 		break;
@@ -299,8 +290,8 @@ bool CPU_Init(std::string *errorString, FileLoader *loadedFile) {
 		break;
 	default:
 		// Can we even get here?
-		WARN_LOG(LOADER, "CPU_Init didn't recognize file. %s", errorString->c_str());
-		break;
+		ERROR_LOG(Log::Loader, "CPU_Init didn't recognize file. %s", errorString->c_str());
+		return false;
 	}
 
 	// Here we have read the PARAM.SFO, let's see if we need any compatibility overrides.
@@ -430,11 +421,11 @@ bool PSP_InitStart(const CoreParameter &coreParam, std::string *error_string) {
 	}
 
 #if defined(_WIN32) && PPSSPP_ARCH(AMD64)
-	NOTICE_LOG(BOOT, "PPSSPP %s Windows 64 bit", PPSSPP_GIT_VERSION);
+	NOTICE_LOG(Log::Boot, "PPSSPP %s Windows 64 bit", PPSSPP_GIT_VERSION);
 #elif defined(_WIN32) && !PPSSPP_ARCH(AMD64)
-	NOTICE_LOG(BOOT, "PPSSPP %s Windows 32 bit", PPSSPP_GIT_VERSION);
+	NOTICE_LOG(Log::Boot, "PPSSPP %s Windows 32 bit", PPSSPP_GIT_VERSION);
 #else
-	NOTICE_LOG(BOOT, "PPSSPP %s", PPSSPP_GIT_VERSION);
+	NOTICE_LOG(Log::Boot, "PPSSPP %s", PPSSPP_GIT_VERSION);
 #endif
 
 	Core_NotifyLifecycle(CoreLifecycle::STARTING);
@@ -560,6 +551,9 @@ bool PSP_IsQuitting() {
 }
 
 void PSP_Shutdown() {
+	// Reduce the risk for weird races with the Windows GE debugger.
+	gpuDebug = nullptr;
+
 	Achievements::UnloadGame();
 
 	// Do nothing if we never inited.
@@ -604,7 +598,6 @@ bool PSP_Reboot(std::string *error_string) {
 }
 
 void PSP_BeginHostFrame() {
-	// Reapply the graphics state of the PSP
 	if (gpu) {
 		gpu->BeginHostFrame();
 	}
@@ -633,7 +626,6 @@ void PSP_RunLoopWhileState() {
 }
 
 void PSP_RunLoopUntil(u64 globalticks) {
-	SaveState::Process();
 	if (coreState == CORE_POWERDOWN || coreState == CORE_BOOT_ERROR || coreState == CORE_RUNTIME_ERROR) {
 		return;
 	} else if (coreState == CORE_STEPPING) {
@@ -641,7 +633,9 @@ void PSP_RunLoopUntil(u64 globalticks) {
 		return;
 	}
 
-	mipsr4k.RunLoopUntil(globalticks);
+	if (coreState != CORE_NEXTFRAME) {  // Can be set by SaveState as well as by sceDisplay
+		mipsr4k.RunLoopUntil(globalticks);
+	}
 }
 
 void PSP_RunLoopFor(int cycles) {
@@ -713,7 +707,7 @@ Path GetSysDirectory(PSPDirectories directoryType) {
 		return g_Config.memStickDirectory;
 	// Just return the memory stick root if we run into some sort of problem.
 	default:
-		ERROR_LOG(FILESYS, "Unknown directory type.");
+		ERROR_LOG(Log::FileSystem, "Unknown directory type.");
 		return g_Config.memStickDirectory;
 	}
 }
@@ -726,10 +720,10 @@ bool CreateSysDirectories() {
 #endif
 
 	Path pspDir = GetSysDirectory(DIRECTORY_PSP);
-	INFO_LOG(IO, "Creating '%s' and subdirs:", pspDir.c_str());
+	INFO_LOG(Log::IO, "Creating '%s' and subdirs:", pspDir.c_str());
 	File::CreateDir(pspDir);
 	if (!File::Exists(pspDir)) {
-		INFO_LOG(IO, "Not a workable memstick directory. Giving up");
+		INFO_LOG(Log::IO, "Not a workable memstick directory. Giving up");
 		return false;
 	}
 
@@ -754,6 +748,5 @@ bool CreateSysDirectories() {
 			File::CreateEmptyFile(path / ".nomedia");
 		}
 	}
-
 	return true;
 }

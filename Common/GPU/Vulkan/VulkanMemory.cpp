@@ -71,11 +71,12 @@ VulkanPushPool::Block VulkanPushPool::CreateBlock(size_t size) {
 	VmaAllocationInfo allocInfo{};
 	
 	VkResult result = vmaCreateBuffer(vulkan_->Allocator(), &b, &allocCreateInfo, &block.buffer, &block.allocation, &allocInfo);
-	_assert_(result == VK_SUCCESS);
+
+	_assert_msg_(result == VK_SUCCESS, "VulkanPushPool: Failed to create buffer (result = %s, size = %d)", VulkanResultToString(result), (int)size);
 
 	result = vmaMapMemory(vulkan_->Allocator(), block.allocation, (void **)(&block.writePtr));
-	_assert_msg_(result == VK_SUCCESS, "VulkanPushPool: Failed to map memory (result = %s)", VulkanResultToString(result));
 
+	_assert_msg_(result == VK_SUCCESS, "VulkanPushPool: Failed to map memory (result = %s, size = %d)", VulkanResultToString(result), (int)size);
 	_assert_msg_(block.writePtr != nullptr, "VulkanPushPool: Failed to map memory on block of size %d", (int)block.size);
 	return block;
 }
@@ -121,7 +122,7 @@ void VulkanPushPool::BeginFrame() {
 		size_t size = blocks_.back().size;
 		blocks_.back().Destroy(vulkan_);
 		blocks_.pop_back();
-		DEBUG_LOG(G3D, "%s: Garbage collected block of size %s in %0.2f ms", name_, NiceSizeFormat(size).c_str(), time_now_d() - start);
+		DEBUG_LOG(Log::G3D, "%s: Garbage collected block of size %s in %0.2f ms", name_, NiceSizeFormat(size).c_str(), time_now_d() - start);
 	}
 }
 
@@ -153,7 +154,7 @@ void VulkanPushPool::NextBlock(VkDeviceSize allocationSize) {
 	blocks_.back().used = allocationSize;
 	blocks_.back().lastUsed = time_now_d();
 	// curBlockIndex_ is already set correctly here.
-	DEBUG_LOG(G3D, "%s: Created new block of size %s in %0.2f ms", name_, NiceSizeFormat(newBlockSize).c_str(), 1000.0 * (time_now_d() - start));
+	DEBUG_LOG(Log::G3D, "%s: Created new block of size %s in %0.2f ms", name_, NiceSizeFormat(newBlockSize).c_str(), 1000.0 * (time_now_d() - start));
 }
 
 size_t VulkanPushPool::GetUsedThisFrame() const {

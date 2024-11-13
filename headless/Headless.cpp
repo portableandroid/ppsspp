@@ -40,8 +40,8 @@
 #include "Core/HLE/sceUtility.h"
 #include "Core/SaveState.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
-#include "Log.h"
-#include "LogManager.h"
+#include "Common/Log.h"
+#include "Common/Log/LogManager.h"
 
 #include "Compare.h"
 #include "HeadlessHost.h"
@@ -142,8 +142,8 @@ void System_AudioClear() {}
 void System_AudioPushSamples(const s32 *audio, int numSamples) {}
 
 // TODO: To avoid having to define these here, these should probably be turned into system "requests".
-bool NativeSaveSecret(const char *nameOfSecret, const std::string &data) { return false; }
-std::string NativeLoadSecret(const char *nameOfSecret) {
+bool NativeSaveSecret(std::string_view nameOfSecret, std::string_view data) { return false; }
+std::string NativeLoadSecret(std::string_view nameOfSecret) {
 	return "";
 }
 
@@ -318,8 +318,9 @@ std::vector<std::string> ReadFromListFile(const std::string &listFilename) {
 int main(int argc, const char* argv[])
 {
 	PROFILE_INIT();
+	TimeInit();
 #if PPSSPP_PLATFORM(WINDOWS)
-	timeBeginPeriod(1);
+	SetCleanExitOnAssert();
 #else
 	// Ignore sigpipe.
 	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
@@ -338,6 +339,7 @@ int main(int argc, const char* argv[])
 	GPUCore gpuCore = GPUCORE_SOFTWARE;
 	CPUCore cpuCore = CPUCore::JIT;
 	int debuggerPort = -1;
+	bool newAtrac = false;
 
 	std::vector<std::string> testFilenames;
 	const char *mountIso = nullptr;
@@ -374,6 +376,8 @@ int main(int argc, const char* argv[])
 			testOptions.bench = true;
 		else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose"))
 			testOptions.verbose = true;
+		else if (!strcmp(argv[i], "--new-atrac"))
+			newAtrac = true;
 		else if (!strncmp(argv[i], "--graphics=", strlen("--graphics=")) && strlen(argv[i]) > strlen("--graphics="))
 		{
 			const char *gpuName = argv[i] + strlen("--graphics=");
@@ -427,8 +431,8 @@ int main(int argc, const char* argv[])
 
 	PrintfLogger *printfLogger = new PrintfLogger();
 
-	for (int i = 0; i < (int)LogType::NUMBER_OF_LOGS; i++) {
-		LogType type = (LogType)i;
+	for (int i = 0; i < (int)Log::NUMBER_OF_LOGS; i++) {
+		Log type = (Log)i;
 		logman->SetEnabled(type, fullLog);
 		logman->SetLogLevel(type, LogLevel::LDEBUG);
 	}
@@ -497,6 +501,7 @@ int main(int argc, const char* argv[])
 	g_Config.iGlobalVolume = VOLUME_FULL;
 	g_Config.iReverbVolume = VOLUME_FULL;
 	g_Config.internalDataDirectory.clear();
+	g_Config.bUseExperimentalAtrac = newAtrac;
 
 	Path exePath = File::GetExeDirectory();
 	g_Config.flash0Directory = exePath / "assets/flash0";

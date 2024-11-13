@@ -100,6 +100,10 @@ static bool g_rebootEmuThread = false;
 
 static SDL_AudioSpec g_retFmt;
 
+static bool g_textFocusChanged;
+static bool g_textFocus;
+
+
 // Window state to be transferred to the main SDL thread.
 static std::mutex g_mutexWindow;
 struct WindowState {
@@ -152,24 +156,24 @@ static void InitSDLAudioDevice(const std::string &name = "") {
 	if (!startDevice.empty()) {
 		audioDev = SDL_OpenAudioDevice(startDevice.c_str(), 0, &fmt, &g_retFmt, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
 		if (audioDev <= 0) {
-			WARN_LOG(AUDIO, "Failed to open audio device: %s", startDevice.c_str());
+			WARN_LOG(Log::Audio, "Failed to open audio device: %s", startDevice.c_str());
 		}
 	}
 	if (audioDev <= 0) {
-		INFO_LOG(AUDIO, "SDL: Trying a different audio device");
+		INFO_LOG(Log::Audio, "SDL: Trying a different audio device");
 		audioDev = SDL_OpenAudioDevice(nullptr, 0, &fmt, &g_retFmt, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
 	}
 	if (audioDev <= 0) {
-		ERROR_LOG(AUDIO, "Failed to open audio device: %s", SDL_GetError());
+		ERROR_LOG(Log::Audio, "Failed to open audio device: %s", SDL_GetError());
 	} else {
 		if (g_retFmt.samples != fmt.samples) // Notify, but still use it
-			ERROR_LOG(AUDIO, "Output audio samples: %d (requested: %d)", g_retFmt.samples, fmt.samples);
+			ERROR_LOG(Log::Audio, "Output audio samples: %d (requested: %d)", g_retFmt.samples, fmt.samples);
 		if (g_retFmt.format != fmt.format || g_retFmt.channels != fmt.channels) {
-			ERROR_LOG(AUDIO, "Sound buffer format does not match requested format.");
-			ERROR_LOG(AUDIO, "Output audio freq: %d (requested: %d)", g_retFmt.freq, fmt.freq);
-			ERROR_LOG(AUDIO, "Output audio format: %d (requested: %d)", g_retFmt.format, fmt.format);
-			ERROR_LOG(AUDIO, "Output audio channels: %d (requested: %d)", g_retFmt.channels, fmt.channels);
-			ERROR_LOG(AUDIO, "Provided output format does not match requirement, turning audio off");
+			ERROR_LOG(Log::Audio, "Sound buffer format does not match requested format.");
+			ERROR_LOG(Log::Audio, "Output audio freq: %d (requested: %d)", g_retFmt.freq, fmt.freq);
+			ERROR_LOG(Log::Audio, "Output audio format: %d (requested: %d)", g_retFmt.format, fmt.format);
+			ERROR_LOG(Log::Audio, "Output audio channels: %d (requested: %d)", g_retFmt.channels, fmt.channels);
+			ERROR_LOG(Log::Audio, "Provided output format does not match requirement, turning audio off");
 			SDL_CloseAudioDevice(audioDev);
 		}
 		SDL_PauseAudioDevice(audioDev, 0);
@@ -234,7 +238,8 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		g_QuitRequested = true;
 		return true;
 #if PPSSPP_PLATFORM(SWITCH)
-	case SystemRequestType::INPUT_TEXT_MODAL: {
+	case SystemRequestType::INPUT_TEXT_MODAL:
+	{
 		// swkbd only works on "real" titles
 		if (__nx_applet_type != AppletType_Application && __nx_applet_type != AppletType_SystemApplication) {
 			g_requestManager.PostSystemFailure(requestId);
@@ -273,9 +278,8 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 				g_requestManager.PostSystemFailure(requestId);
 			}
 		};
-		DarwinFileSystemServices services;
 		BrowseFileType fileType = (BrowseFileType)param3;
-		services.presentDirectoryPanel(callback, /* allowFiles = */ true, /* allowDirectories = */ false, fileType);
+		DarwinFileSystemServices::presentDirectoryPanel(callback, /* allowFiles = */ true, /* allowDirectories = */ false, fileType);
 		return true;
 	}
 	case SystemRequestType::BROWSE_FOR_FOLDER:
@@ -287,8 +291,7 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 				g_requestManager.PostSystemFailure(requestId);
 			}
 		};
-		DarwinFileSystemServices services;
-		services.presentDirectoryPanel(callback, /* allowFiles = */ false, /* allowDirectories = */ true);
+		DarwinFileSystemServices::presentDirectoryPanel(callback, /* allowFiles = */ false, /* allowDirectories = */ true);
 		return true;
 	}
 #endif
@@ -348,6 +351,23 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 #endif /* PPSSPP_PLATFORM(WINDOWS) */
 		return true;
 	}
+	case SystemRequestType::NOTIFY_UI_EVENT:
+	{
+		switch ((UIEventNotification)param3) {
+		case UIEventNotification::TEXT_GOTFOCUS:
+			g_textFocus = true;
+			g_textFocusChanged = true;
+			break;
+		case UIEventNotification::POPUP_CLOSED:
+		case UIEventNotification::TEXT_LOSTFOCUS:
+			g_textFocus = false;
+			g_textFocusChanged = true;
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
 	default:
 		return false;
 	}
@@ -367,7 +387,7 @@ void System_LaunchUrl(LaunchUrlType urlType, const char *url) {
 		webWifiCreate(&conf, NULL, url, uuid, 0);
 		webWifiShow(&conf, NULL);
 #elif defined(MOBILE_DEVICE)
-		INFO_LOG(SYSTEM, "Would have gone to %s but LaunchBrowser is not implemented on this platform", url);
+		INFO_LOG(Log::System, "Would have gone to %s but LaunchBrowser is not implemented on this platform", url);
 #elif defined(_WIN32)
 		std::wstring wurl = ConvertUTF8ToWString(url);
 		ShellExecute(NULL, L"open", wurl.c_str(), NULL, NULL, SW_SHOWNORMAL);
@@ -377,7 +397,7 @@ void System_LaunchUrl(LaunchUrlType urlType, const char *url) {
 		std::string command = std::string("xdg-open ") + url;
 		int err = system(command.c_str());
 		if (err) {
-			INFO_LOG(SYSTEM, "Would have gone to %s but xdg-utils seems not to be installed", url);
+			INFO_LOG(Log::System, "Would have gone to %s but xdg-utils seems not to be installed", url);
 		}
 #endif
 		break;
@@ -385,7 +405,7 @@ void System_LaunchUrl(LaunchUrlType urlType, const char *url) {
 	case LaunchUrlType::EMAIL_ADDRESS:
 	{
 #if defined(MOBILE_DEVICE)
-		INFO_LOG(SYSTEM, "Would have opened your email client for %s but LaunchEmail is not implemented on this platform", url);
+		INFO_LOG(Log::System, "Would have opened your email client for %s but LaunchEmail is not implemented on this platform", url);
 #elif defined(_WIN32)
 		std::wstring mailto = std::wstring(L"mailto:") + ConvertUTF8ToWString(url);
 		ShellExecute(NULL, L"open", mailto.c_str(), NULL, NULL, SW_SHOWNORMAL);
@@ -396,7 +416,7 @@ void System_LaunchUrl(LaunchUrlType urlType, const char *url) {
 		std::string command = std::string("xdg-email ") + url;
 		int err = system(command.c_str());
 		if (err) {
-			INFO_LOG(SYSTEM, "Would have gone to %s but xdg-utils seems not to be installed", url);
+			INFO_LOG(Log::System, "Would have gone to %s but xdg-utils seems not to be installed", url);
 		}
 #endif
 		break;
@@ -545,6 +565,7 @@ float System_GetPropertyFloat(SystemProperty prop) {
 
 bool System_GetPropertyBool(SystemProperty prop) {
 	switch (prop) {
+	case SYSPROP_HAS_TEXT_CLIPBOARD:
 	case SYSPROP_CAN_SHOW_FILE:
 #if PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(MAC) || (PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID))
 		return true;
@@ -1087,6 +1108,18 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 	}
 }
 
+void UpdateTextFocus() {
+	if (g_textFocusChanged) {
+		INFO_LOG(Log::System, "Updating text focus: %d", g_textFocus);
+		if (g_textFocus) {
+			SDL_StartTextInput();
+		} else {
+			SDL_StopTextInput();
+		}
+		g_textFocusChanged = false;
+	}
+}
+
 void UpdateSDLCursor() {
 #if !defined(MOBILE_DEVICE)
 	if (lastUIState != GetUIState()) {
@@ -1109,6 +1142,8 @@ int main(int argc, char *argv[]) {
 			return 0;
 		}
 	}
+
+	TimeInit();
 
 #ifdef HAVE_LIBNX
 	socketInitializeDefault();
@@ -1133,8 +1168,10 @@ int main(int argc, char *argv[]) {
 	SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
 #endif
 
+	bool vulkanMayBeAvailable = false;
 	if (VulkanMayBeAvailable()) {
 		printf("DEBUG: Vulkan might be available.\n");
+		vulkanMayBeAvailable = true;
 	} else {
 		printf("DEBUG: Vulkan is not available, not using Vulkan.\n");
 	}
@@ -1317,35 +1354,60 @@ int main(int argc, char *argv[]) {
 			x = g_Config.iWindowX;
 		if (g_Config.iWindowY != -1)
 			y = g_Config.iWindowY;
-		if (g_Config.iWindowWidth > 0)
+		if (g_Config.iWindowWidth > 0 && set_xres <= 0)
 			w = g_Config.iWindowWidth;
-		if (g_Config.iWindowHeight > 0)
+		if (g_Config.iWindowHeight > 0 && set_yres <= 0)
 			h = g_Config.iWindowHeight;
 	}
 
 	GraphicsContext *graphicsContext = nullptr;
 	SDL_Window *window = nullptr;
 
+	// Switch away from Vulkan if not available.
+	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN && !vulkanMayBeAvailable) {
+		g_Config.iGPUBackend = (int)GPUBackend::OPENGL;
+	}
+
 	std::string error_message;
 	if (g_Config.iGPUBackend == (int)GPUBackend::OPENGL) {
-		SDLGLGraphicsContext *ctx = new SDLGLGraphicsContext();
-		if (ctx->Init(window, x, y, w, h, mode, &error_message) != 0) {
-			printf("GL init error '%s'\n", error_message.c_str());
+		SDLGLGraphicsContext *glctx = new SDLGLGraphicsContext();
+		if (glctx->Init(window, x, y, w, h, mode, &error_message) != 0) {
+			// Let's try the fallback once per process run.
+			printf("GL init error '%s' - falling back to Vulkan\n", error_message.c_str());
+			g_Config.iGPUBackend = (int)GPUBackend::VULKAN;
+			SetGPUBackend((GPUBackend)g_Config.iGPUBackend);
+			delete glctx;
+
+			// NOTE : This should match the lines below in the Vulkan case.
+			SDLVulkanGraphicsContext *vkctx = new SDLVulkanGraphicsContext();
+			if (!vkctx->Init(window, x, y, w, h, mode | SDL_WINDOW_VULKAN, &error_message)) {
+				printf("Vulkan fallback failed: %s\n", error_message.c_str());
+				return 1;
+			}
+			graphicsContext = vkctx;
+		} else {
+			graphicsContext = glctx;
 		}
-		graphicsContext = ctx;
 #if !PPSSPP_PLATFORM(SWITCH)
 	} else if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
-		SDLVulkanGraphicsContext *ctx = new SDLVulkanGraphicsContext();
-		if (!ctx->Init(window, x, y, w, h, mode | SDL_WINDOW_VULKAN, &error_message)) {
+		SDLVulkanGraphicsContext *vkctx = new SDLVulkanGraphicsContext();
+		if (!vkctx->Init(window, x, y, w, h, mode | SDL_WINDOW_VULKAN, &error_message)) {
+			// Let's try the fallback once per process run.
+
 			printf("Vulkan init error '%s' - falling back to GL\n", error_message.c_str());
 			g_Config.iGPUBackend = (int)GPUBackend::OPENGL;
 			SetGPUBackend((GPUBackend)g_Config.iGPUBackend);
-			delete ctx;
+			delete vkctx;
+
+			// NOTE : This should match the three lines above in the OpenGL case.
 			SDLGLGraphicsContext *glctx = new SDLGLGraphicsContext();
-			glctx->Init(window, x, y, w, h, mode, &error_message);
+			if (glctx->Init(window, x, y, w, h, mode, &error_message) != 0) {
+				printf("GL fallback failed: %s\n", error_message.c_str());
+				return 1;
+			}
 			graphicsContext = glctx;
 		} else {
-			graphicsContext = ctx;
+			graphicsContext = vkctx;
 		}
 #endif
 	}
@@ -1388,14 +1450,20 @@ int main(int argc, char *argv[]) {
 	// Since we render from the main thread, there's nothing done here, but we call it to avoid confusion.
 	if (!graphicsContext->InitFromRenderThread(&error_message)) {
 		printf("Init from thread error: '%s'\n", error_message.c_str());
+		return 1;
 	}
+
+	// OK, we have a valid graphics backend selected. Let's clear the failures.
+	g_Config.sFailedGPUBackends.clear();
 
 #ifdef MOBILE_DEVICE
 	SDL_ShowCursor(SDL_DISABLE);
 #endif
 
-	// Ensure that the swap interval is set after context creation (needed for kmsdrm)
-	SDL_GL_SetSwapInterval(1);
+	// Avoid the IME popup when holding keys. This doesn't affect all versions of SDL.
+	// Note: We re-enable it in text input fields! This is necessary otherwise we don't receive
+	// KEY_CHAR events.
+	SDL_StopTextInput();
 
 	InitSDLAudioDevice();
 
@@ -1420,15 +1488,18 @@ int main(int argc, char *argv[]) {
 	bool waitOnExit = g_Config.iGPUBackend == (int)GPUBackend::OPENGL;
 
 	if (!mainThreadIsRender) {
-		// We should only be a message pump
+		// Vulkan mode uses this.
+		// We should only be a message pump. This allows for lower latency
+		// input events, and so on.
 		while (true) {
 			SDL_Event event;
-			while (SDL_PollEvent(&event)) {
+			while (SDL_WaitEventTimeout(&event, 100)) {
 				ProcessSDLEvent(window, event, &inputTracker);
 			}
 			if (g_QuitRequested || g_RestartRequested)
 				break;
 
+			UpdateTextFocus();
 			UpdateSDLCursor();
 
 			inputTracker.MouseCaptureControl();
@@ -1455,6 +1526,7 @@ int main(int argc, char *argv[]) {
 		if (g_QuitRequested || g_RestartRequested)
 			break;
 
+		UpdateTextFocus();
 		UpdateSDLCursor();
 
 		inputTracker.MouseCaptureControl();
@@ -1478,7 +1550,7 @@ int main(int argc, char *argv[]) {
 			EmuThreadStop("shutdown");
 			// Skipping GL calls, the old context is gone.
 			while (graphicsContext->ThreadFrame()) {
-				INFO_LOG(SYSTEM, "graphicsContext->ThreadFrame executed to clear buffers");
+				INFO_LOG(Log::System, "graphicsContext->ThreadFrame executed to clear buffers");
 			}
 			EmuThreadJoin();
 			graphicsContext->ThreadEnd();
