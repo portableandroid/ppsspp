@@ -7,7 +7,7 @@
 // To help smart scheduling.
 enum class TaskType {
 	CPU_COMPUTE,
-	IO_BLOCKING,
+	IO_BLOCKING,  // NOTE: Only these can access scoped storage on Android (they initialize the JNI context).
 	DEDICATED_THREAD,  // These can never get stuck in queue behind others, but are more expensive to launch. Cannot use I/O.
 };
 
@@ -26,7 +26,7 @@ public:
 	virtual TaskType Type() const = 0;
 	virtual TaskPriority Priority() const = 0;
 	virtual void Run() = 0;
-	virtual bool Cancellable() { return false; }
+	virtual bool Cancellable() const { return false; }
 	virtual void Cancel() {}
 	virtual uint64_t id() { return 0; }
 	virtual void Release() { delete this; }

@@ -10,7 +10,7 @@
 #include "Common/Log.h"
 #include "Core/Config.h"
 #include "Core/System.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 
 retro_video_refresh_t LibretroGraphicsContext::video_cb;
 
@@ -136,12 +136,6 @@ LibretroGraphicsContext *LibretroGraphicsContext::CreateGraphicsContext() {
 	if (preferred == RETRO_HW_CONTEXT_DUMMY || preferred == RETRO_HW_CONTEXT_DIRECT3D) {
 		ctx = new LibretroD3D11Context();
 
-		if (ctx->Init()) {
-			return ctx;
-		}
-		delete ctx;
-
-		ctx = new LibretroD3D9Context();
 		if (ctx->Init()) {
 			return ctx;
 		}

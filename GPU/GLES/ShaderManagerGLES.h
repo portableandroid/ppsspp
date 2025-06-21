@@ -21,7 +21,6 @@
 
 #include "Common/Data/Collections/Hashmaps.h"
 #include "Common/GPU/OpenGL/GLRenderManager.h"
-#include "Common/File/Path.h"
 #include "GPU/Common/ShaderCommon.h"
 #include "GPU/Common/ShaderId.h"
 #include "GPU/Common/VertexShaderGenerator.h"
@@ -29,6 +28,7 @@
 
 class DrawEngineGLES;
 class Shader;
+class Path;
 struct ShaderLanguageDesc;
 
 namespace File {
@@ -157,6 +157,8 @@ private:
 	uint64_t uniformMask_;
 };
 
+class VertexDecoder;
+
 class ShaderManagerGLES : public ShaderManagerCommon {
 public:
 	ShaderManagerGLES(Draw::DrawContext *draw);
@@ -166,7 +168,7 @@ public:
 
 	// This is the old ApplyShader split into two parts, because of annoying information dependencies.
 	// If you call ApplyVertexShader, you MUST call ApplyFragmentShader soon afterwards.
-	Shader *ApplyVertexShader(bool useHWTransform, bool useHWTessellation, VertexDecoder *vertexDecoder, bool weightsAsFloat, bool useSkinInDecode, VShaderID *VSID);
+	Shader *ApplyVertexShader(bool useHWTransform, bool useHWTessellation, u32 vertexType, bool weightsAsFloat, bool useSkinInDecode, VShaderID *VSID);
 	LinkedShader *ApplyFragmentShader(VShaderID VSID, Shader *vs, const ComputedPipelineState &pipelineState, bool useBufferedRendering);
 
 	void DeviceLost() override;

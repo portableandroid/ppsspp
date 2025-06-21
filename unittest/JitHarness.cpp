@@ -33,6 +33,7 @@
 #include "Core/MIPS/MIPSVFPUUtils.h"
 #include "Core/MemMap.h"
 #include "Core/Core.h"
+#include "Core/System.h"
 #include "Core/CoreTiming.h"
 #include "Core/Config.h"
 #include "Core/HLE/HLE.h"
@@ -69,9 +70,9 @@ double ExecCPUTest(bool clearCache = true) {
 	do {
 		for (int j = 0; j < 1000; ++j) {
 			currentMIPS->pc = PSP_GetUserMemoryBase();
-			coreState = CORE_RUNNING;
+			coreState = CORE_RUNNING_CPU;
 
-			while (coreState == CORE_RUNNING) {
+			while (coreState == CORE_RUNNING_CPU) {
 				mipsr4k.RunLoopUntil(blockTicks);
 			}
 			++total;
@@ -96,10 +97,10 @@ double ExecCPUTest(bool clearCache = true) {
 
 static void SetupJitHarness() {
 	// We register a syscall so we have an easy way to finish the test.
-	RegisterModule("UnitTestFakeSyscalls", ARRAY_SIZE(UnitTestFakeSyscalls), UnitTestFakeSyscalls);
+	RegisterHLEModule("UnitTestFakeSyscalls", ARRAY_SIZE(UnitTestFakeSyscalls), UnitTestFakeSyscalls);
 
 	// This is pretty much the bare minimum required to setup jit.
-	coreState = CORE_POWERUP;
+	coreState = CORE_RUNNING_CPU;
 	currentMIPS = &mipsr4k;
 	g_symbolMap = new SymbolMap();
 	Memory::g_MemorySize = Memory::RAM_NORMAL_SIZE;

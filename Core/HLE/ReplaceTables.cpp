@@ -16,15 +16,14 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include "ppsspp_config.h"
+
 #include <algorithm>
 #include <map>
 #include <unordered_map>
 
 #include "Common/CommonTypes.h"
-#include "Common/Data/Convert/SmallDataConvert.h"
 #include "Common/Log.h"
 #include "Common/Swap.h"
-#include "Core/Config.h"
 #include "Core/System.h"
 #include "Core/Debugger/Breakpoints.h"
 #include "Core/Debugger/MemBlockInfo.h"
@@ -39,12 +38,8 @@
 
 #include "GPU/Math3D.h"
 #include "GPU/GPU.h"
-#include "GPU/GPUInterface.h"
-#include "GPU/GPUState.h"
-
-#if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
-#include <emmintrin.h>
-#endif
+#include "GPU/GPUCommon.h"
+#include "Common/Math/SIMDHeaders.h"
 
 enum class GPUReplacementSkip {
 	MEMSET = 1,
@@ -1285,6 +1280,20 @@ static int Hook_omertachinmokunookitethelegacy_download_frame() {
 	return 0;
 }
 
+// Function at 0886665C in US version (Persona 1)
+// Function at 08807DC4 in EU version (Persona 2)
+static int Hook_persona_download_frame() {
+	// Depending on a global (curframe kind of thing), this either reads from
+	// 0x04088000 or 0x04000000 (the two addresses are hardcoded).
+	// We'd have to do some gnarly stuff to get this address, so let's just download both.
+	for (int i = 0; i < 2; i++) {
+		const u32 fb_address = i == 0 ? 0x04000000 : 0x04088000;
+		gpu->PerformReadbackToMemory(fb_address, 0x00088000);
+		NotifyMemInfo(MemBlockFlags::WRITE, fb_address, 0x00088000, "persona1_download_frame");
+	}
+	return 0;
+}
+
 static int Hook_katamari_render_check() {
 	const u32 fb_address = Memory::Read_U32(currentMIPS->r[MIPS_REG_A0] + 0x3C);
 	const u32 fbInfoPtr = Memory::Read_U32(currentMIPS->r[MIPS_REG_A0] + 0x40);
@@ -1600,6 +1609,8 @@ static const ReplacementTableEntry entries[] = {
 	{ "ZZT3_select_hack", &Hook_ZZT3_select_hack, 0, REPFLAG_HOOKENTER, 0xC4 },
 	{ "blitz_fps_hack", &Hook_blitz_fps_hack, 0, REPFLAG_HOOKEXIT , 0 },
 	{ "brian_lara_fps_hack", &Hook_brian_lara_fps_hack, 0, REPFLAG_HOOKEXIT , 0 },
+	{ "persona1_download_frame", &Hook_persona_download_frame, 0, REPFLAG_HOOKENTER, 0 },
+	{ "persona2_download_frame", &Hook_persona_download_frame, 0, REPFLAG_HOOKENTER, 0 },
 	{}
 };
 
@@ -1773,12 +1784,12 @@ bool CanReplaceJalTo(u32 dest, const ReplacementTableEntry **entry, u32 *funcSiz
 	// Make sure we don't replace if there are any breakpoints inside.
 	*funcSize = g_symbolMap->GetFunctionSize(dest);
 	if (*funcSize == SymbolMap::INVALID_ADDRESS) {
-		if (CBreakPoints::IsAddressBreakPoint(dest)) {
+		if (g_breakpoints.IsAddressBreakPoint(dest)) {
 			return false;
 		}
 		*funcSize = (u32)sizeof(u32);
 	} else {
-		if (CBreakPoints::RangeContainsBreakPoint(dest, *funcSize)) {
+		if (g_breakpoints.RangeContainsBreakPoint(dest, *funcSize)) {
 			return false;
 		}
 	}

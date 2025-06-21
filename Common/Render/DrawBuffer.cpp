@@ -1,6 +1,6 @@
-#include <algorithm>
 #include <cmath>
 #include <vector>
+#include <algorithm>
 #include <stddef.h>
 
 #include "Common/System/Display.h"
@@ -348,15 +348,19 @@ void DrawBuffer::DrawImageRotatedStretch(ImageID atlas_image, const Bounds &boun
 	}
 }
 
-void DrawBuffer::Circle(float xc, float yc, float radius, float thickness, int segments, float startAngle, uint32_t color, float u_mul) {
-	float angleDelta = PI * 2 / segments;
+void DrawBuffer::CircleSegment(float xc, float yc, float radius, float thickness, int segments, float startAngle, float endAngle, uint32_t color, float u_mul) {
+	if (endAngle < startAngle) {
+		std::swap(endAngle, startAngle);
+	}
+
+	float angleDelta = (endAngle - startAngle) / segments;
 	float uDelta = 1.0f / segments;
 	float t2 = thickness / 2.0f;
 	float r1 = radius + t2;
 	float r2 = radius - t2;
 	for (int i = 0; i < segments + 1; i++) {
-		float angle1 = i * angleDelta;
-		float angle2 = (i + 1) * angleDelta;
+		float angle1 = startAngle + i * angleDelta;
+		float angle2 = startAngle + (i + 1) * angleDelta;
 		float u1 = u_mul * i * uDelta;
 		float u2 = u_mul * (i + 1) * uDelta;
 		// TODO: get rid of one pair of cos/sin per loop, can reuse from last iteration
@@ -370,6 +374,10 @@ void DrawBuffer::Circle(float xc, float yc, float radius, float thickness, int s
 		V(x[3],	y[3], color, u2, 1.0f);
 		V(x[2],	y[2], color, u1, 1.0f);
 	}
+}
+
+void DrawBuffer::Circle(float x, float y, float radius, float thickness, int segments, float startAngle, uint32_t color, float u_mul) {
+	CircleSegment(x, y, radius, thickness, segments, startAngle, startAngle + PI * 2.0, color, u_mul);
 }
 
 void DrawBuffer::FillCircle(float xc, float yc, float radius, int segments, uint32_t color) {
@@ -412,6 +420,15 @@ void DrawBuffer::DrawImage4Grid(ImageID atlas_image, float x1, float y1, float x
 	float vm = (v2 + v1) * 0.5f;
 	float iw2 = (image->w * 0.5f) * corner_scale;
 	float ih2 = (image->h * 0.5f) * corner_scale;
+
+	// Automatically reduce corner scale radius if it can't fit.
+	if (iw2 > (x2 - x1) * 0.5f) {
+		iw2 = (x2 - x1) * 0.5f;
+	}
+	if (ih2 > (y2 - y1) * 0.5f) {
+		ih2 = (y2 - y1) * 0.5f;
+	}
+
 	float xa = x1 + iw2;
 	float xb = x2 - iw2;
 	float ya = y1 + ih2;
@@ -501,9 +518,6 @@ void DrawBuffer::MeasureText(FontID font, std::string_view text, float *w, float
 			continue;
 		} else if (cval == '\t') {
 			cval = ' ';
-		} else if (cval == '&' && utf.peek() != '&') {
-			// Ignore lone ampersands
-			continue;
 		}
 		const AtlasChar *c = atlasfont->getChar(cval);
 		if (c) {
@@ -579,7 +593,7 @@ void DrawBuffer::DrawTextRect(FontID font, std::string_view text, float x, float
 	float totalWidth, totalHeight;
 	MeasureTextRect(font, toDraw, Bounds(x, y, w, h), &totalWidth, &totalHeight, align);
 
-	std::vector<std::string> lines;
+	std::vector<std::string_view> lines;
 	SplitString(toDraw, '\n', lines);
 
 	float baseY = y;
@@ -592,7 +606,7 @@ void DrawBuffer::DrawTextRect(FontID font, std::string_view text, float x, float
 	}
 
 	// This allows each line to be horizontally centered by itself.
-	for (const std::string &line : lines) {
+	for (std::string_view line : lines) {
 		DrawText(font, line, x, baseY, color, align);
 
 		float tw, th;
@@ -642,9 +656,6 @@ void DrawBuffer::DrawText(FontID font, std::string_view text, float x, float y, 
 			continue;
 		} else if (cval == '\t') {
 			cval = ' ';
-		} else if (cval == '&' && utf.peek() != '&') {
-			// Ignore lone ampersands
-			continue;
 		}
 		const AtlasChar *ch = atlasfont->getChar(cval);
 		if (!ch)

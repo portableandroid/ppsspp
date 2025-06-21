@@ -30,6 +30,7 @@
 #include "GPU/Common/TextureScalerCommon.h"
 #include "GPU/Common/TextureShaderCommon.h"
 #include "GPU/Common/TextureReplacer.h"
+#include "GPU/GPUDefinitions.h"
 
 class Draw2D;
 
@@ -60,6 +61,10 @@ ENUM_CLASS_BITOPS(TexDecodeFlags);
 namespace Draw {
 class DrawContext;
 class Texture;
+}
+
+namespace GPURecord {
+class Recorder;
 }
 
 // Used by D3D11 and Vulkan, could be used by modern GL
@@ -333,7 +338,7 @@ public:
 	TextureCacheCommon(Draw::DrawContext *draw, Draw2D *draw2D);
 	virtual ~TextureCacheCommon();
 
-	void LoadClut(u32 clutAddr, u32 loadBytes);
+	void LoadClut(u32 clutAddr, u32 loadBytes, GPURecord::Recorder *recorder);
 	bool GetCurrentClutBuffer(GPUDebugBuffer &buffer);
 
 	// This updates nextTexture_ / nextFramebufferTexture_, which is then used by ApplyTexture.
@@ -344,7 +349,7 @@ public:
 		shaderManager_ = sm;
 	}
 
-	void ApplyTexture();
+	void ApplyTexture(bool doBind = true);
 	bool SetOffsetTexture(u32 yOffset);
 	void Invalidate(u32 addr, int size, GPUInvalidationType type);
 	void InvalidateAll(GPUInvalidationType type);
@@ -379,8 +384,26 @@ public:
 	virtual void DeviceLost() = 0;
 	virtual void DeviceRestore(Draw::DrawContext *draw) = 0;
 
+	// Accessors for the debugger.
+	virtual void *GetNativeTextureView(const TexCacheEntry *entry, bool flat) const = 0;
+
+	const TexCache &Cache() const { return cache_; }
+	const TexCache &SecondCache() const { return secondCache_; }
+
+	const size_t CacheSizeEstimate() const { return cacheSizeEstimate_; }
+	const size_t SecondCacheSizeEstimate() const { return secondCacheSizeEstimate_; }
+
+	struct VideoInfo {
+		u32 addr;
+		u32 size;
+		int flips;
+	};
+
+	const std::vector<VideoInfo> &Videos() const {
+		return videos_;
+	}
+
 protected:
-	virtual void *GetNativeTextureView(const TexCacheEntry *entry) = 0;
 	bool PrepareBuildTexture(BuildTexturePlan &plan, TexCacheEntry *entry);
 
 	virtual void BindTexture(TexCacheEntry *entry) = 0;
@@ -489,8 +512,8 @@ protected:
 	int texelsScaledThisFrame_ = 0;
 	int timesInvalidatedAllThisFrame_ = 0;
 	double replacementTimeThisFrame_ = 0;
-	// TODO: Maybe vary by FPS...
-	double replacementFrameBudget_ = 0.5 / 60.0;
+	// Recomputed once per frame. Depends FPS and soon also config.
+	double replacementFrameBudgetSeconds_ = 0.5 / 60.0;
 
 	TexCache cache_;
 	u32 cacheSizeEstimate_ = 0;
@@ -498,11 +521,6 @@ protected:
 	TexCache secondCache_;
 	u32 secondCacheSizeEstimate_ = 0;
 
-	struct VideoInfo {
-		u32 addr;
-		u32 size;
-		int flips;
-	};
 	std::vector<VideoInfo> videos_;
 
 	AlignedVector<u32, 16> tmpTexBuf32_;

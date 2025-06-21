@@ -47,7 +47,6 @@ private:
 	void CreateCustomizeTab(UI::ViewGroup *viewGroup);
 	void CreateDeveloperToolsTab(UI::ViewGroup *viewGroup);
 
-	std::string username_;
 	std::string password_;
 };
 
@@ -66,6 +65,7 @@ protected:
 	bool ShowSearchControls() const override { return false; }
 
 private:
+	void CreateLeaderboardTab(UI::LinearLayout *layout, const rc_client_leaderboard_t *leaderboard);
 	void FetchEntries();
 	void Poll();
 

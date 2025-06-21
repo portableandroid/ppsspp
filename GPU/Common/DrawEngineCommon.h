@@ -25,11 +25,11 @@
 #include "GPU/Math3D.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/GPUStateUtils.h"
-#include "GPU/Common/GPUDebugInterface.h"
 #include "GPU/Common/IndexGenerator.h"
 #include "GPU/Common/VertexDecoderCommon.h"
 
 class VertexDecoder;
+struct DepthDraw;
 
 enum {
 	VERTEX_BUFFER_MAX = 65536,
@@ -52,12 +52,6 @@ enum FBOTexState {
 	FBO_TEX_COPY_BIND_TEX,
 	FBO_TEX_READ_FRAMEBUFFER,
 };
-
-inline uint32_t GetVertTypeID(uint32_t vertType, int uvGenMode, bool skinInDecode) {
-	// As the decoder depends on the UVGenMode when we use UV prescale, we simply mash it
-	// into the top of the verttype where there are unused bits.
-	return (vertType & 0xFFFFFF) | (uvGenMode << 24) | (skinInDecode << 26);
-}
 
 struct SimpleVertex;
 namespace Spline { struct Weight2D; }
@@ -82,42 +76,49 @@ public:
 	virtual ~DrawEngineCommon();
 
 	void Init();
+
+	virtual void BeginFrame();
+
+	void SetGPUCommon(GPUCommon *gpuCommon) {
+		gpuCommon_ = gpuCommon;
+	}
+
 	virtual void DeviceLost() = 0;
 	virtual void DeviceRestore(Draw::DrawContext *draw) = 0;
 
-	bool GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices);
-
-	static u32 NormalizeVertices(u8 *outPtr, u8 *bufPtr, const u8 *inPtr, VertexDecoder *dec, int lowerBound, int upperBound, u32 vertType);
-
-	// Flush is normally non-virtual but here's a virtual way to call it, used by the shared spline code, which is expensive anyway.
-	// Not really sure if these wrappers are worth it...
-	virtual void DispatchFlush() = 0;
+	// Dispatches the queued-up draws.
+	virtual void Flush() = 0;
 
 	// This would seem to be unnecessary now, but is still required for splines/beziers to work in the software backend since SubmitPrim
 	// is different. Should probably refactor that.
 	// Note that vertTypeID should be computed using GetVertTypeID().
 	virtual void DispatchSubmitPrim(const void *verts, const void *inds, GEPrimitiveType prim, int vertexCount, u32 vertTypeID, bool clockwise, int *bytesRead) {
-		SubmitPrim(verts, inds, prim, vertexCount, vertTypeID, clockwise, bytesRead);
+		VertexDecoder *dec = GetVertexDecoder(vertTypeID);
+		SubmitPrim(verts, inds, prim, vertexCount, dec, vertTypeID, clockwise, bytesRead);
 	}
 
 	virtual void DispatchSubmitImm(GEPrimitiveType prim, TransformedVertex *buffer, int vertexCount, int cullMode, bool continuation);
 
-	bool TestBoundingBox(const void *control_points, const void *inds, int vertexCount, u32 vertType);
+	bool TestBoundingBox(const void *control_points, const void *inds, int vertexCount, const VertexDecoder *dec, u32 vertType);
 
 	// This is a less accurate version of TestBoundingBox, but faster. Can have more false positives.
 	// Doesn't support indexing.
-	bool TestBoundingBoxFast(const void *control_points, int vertexCount, u32 vertType);
+	bool TestBoundingBoxFast(const void *control_points, int vertexCount, const VertexDecoder *dec, u32 vertType);
+	bool TestBoundingBoxThrough(const void *vdata, int vertexCount, const VertexDecoder *dec, u32 vertType, int *bytesRead);
+
+	void FlushPartialDecode() {
+		DecodeVerts(dec_, decoded_);
+	}
 
 	void FlushSkin() {
-		bool applySkin = (lastVType_ & GE_VTYPE_WEIGHT_MASK) && decOptions_.applySkinInDecode;
-		if (applySkin) {
-			DecodeVerts(decoded_);
+		if (dec_ && dec_->skinInDecode) {
+			FlushPartialDecode();
 		}
 	}
 
-	int ExtendNonIndexedPrim(const uint32_t *cmd, const uint32_t *stall, u32 vertTypeID, bool clockwise, int *bytesRead, bool isTriangle);
-	bool SubmitPrim(const void *verts, const void *inds, GEPrimitiveType prim, int vertexCount, u32 vertTypeID, bool clockwise, int *bytesRead);
-	void SkipPrim(GEPrimitiveType prim, int vertexCount, u32 vertTypeID, int *bytesRead);
+	int ExtendNonIndexedPrim(const uint32_t *cmd, const uint32_t *stall, const VertexDecoder *dec, u32 vertTypeID, bool clockwise, int *bytesRead, bool isTriangle);
+	bool SubmitPrim(const void *verts, const void *inds, GEPrimitiveType prim, int vertexCount, const VertexDecoder *dec, u32 vertTypeID, bool clockwise, int *bytesRead);
+	void SkipPrim(GEPrimitiveType prim, int vertexCount, const VertexDecoder *dec, u32 vertTypeID, int *bytesRead);
 
 	template<class Surface>
 	void SubmitCurve(const void *control_points, const void *indices, Surface &surface, u32 vertType, int *bytesRead, const char *scope);
@@ -143,27 +144,44 @@ public:
 		return numDrawVerts_;
 	}
 
-	VertexDecoder *GetVertexDecoder(u32 vtype);
-
-	virtual void ClearTrackedVertexArrays() {}
+	VertexDecoder *GetVertexDecoder(u32 vertTypeID) {
+		VertexDecoder *dec;
+		if (decoderMap_.Get(vertTypeID, &dec))
+			return dec;
+		dec = new VertexDecoder();
+		_assert_(dec);
+		dec->SetVertexType(vertTypeID, decOptions_, decJitCache_);
+		decoderMap_.Insert(vertTypeID, dec);
+		return dec;
+	}
 
 	void AssertEmpty() {
 		_dbg_assert_(numDrawVerts_ == 0 && numDrawInds_ == 0);
 	}
 
+	// temporary hack
+	uint8_t *GetTempSpace() {
+		return decoded_ + 12 * 65536;
+	}
+
+	void FlushQueuedDepth();
+
 protected:
 	virtual bool UpdateUseHWTessellation(bool enabled) const { return enabled; }
 	void UpdatePlanes();
 
-	void DecodeVerts(u8 *dest);
+	void DecodeVerts(const VertexDecoder *dec, u8 *dest);
 	int DecodeInds();
-
-	// Preprocessing for spline/bezier
-	u32 NormalizeVertices(u8 *outPtr, u8 *bufPtr, const u8 *inPtr, int lowerBound, int upperBound, u32 vertType, int *vertexSize = nullptr);
 
 	int ComputeNumVertsToDecode() const;
 
 	void ApplyFramebufferRead(FBOTexState *fboTexState);
+
+	void InitDepthRaster();
+	void ShutdownDepthRaster();
+	void DepthRasterSubmitRaw(GEPrimitiveType prim, const VertexDecoder *dec, uint32_t vertTypeID, int vertexCount);
+	void DepthRasterPredecoded(GEPrimitiveType prim, const void *inVerts, int numDecoded, const VertexDecoder *dec, int vertexCount);
+	bool CalculateDepthDraw(DepthDraw *draw, GEPrimitiveType prim, int vertexCount);
 
 	static inline int IndexSize(u32 vtype) {
 		const u32 indexType = (vtype & GE_VTYPE_IDX_MASK);
@@ -219,6 +237,11 @@ protected:
 	}
 
 	inline bool CollectedPureDraw() const {
+		// TODO: Do something faster.
+		if (useDepthRaster_) {
+			return false;
+		}
+
 		switch (seenPrims_) {
 		case 1 << GE_PRIM_TRIANGLE_STRIP:
 			return !anyCCWOrIndexed_ && numDrawInds_ == 1;
@@ -296,7 +319,7 @@ protected:
 	uint32_t drawVertexOffsets_[MAX_DEFERRED_DRAW_VERTS];
 	DeferredInds drawInds_[MAX_DEFERRED_DRAW_INDS];
 
-	VertexDecoder *dec_ = nullptr;
+	const VertexDecoder *dec_ = nullptr;
 	u32 lastVType_ = -1;  // corresponds to dec_.  Could really just pick it out of dec_...
 	int numDrawVerts_ = 0;
 	int numDrawInds_ = 0;
@@ -308,6 +331,8 @@ protected:
 	int seenPrims_ = 0;
 	bool anyCCWOrIndexed_ = 0;
 	bool anyIndexed_ = 0;
+
+	bool applySkinInDecode_ = false;
 
 	// Vertex collector state
 	IndexGenerator indexGen;
@@ -330,4 +355,20 @@ protected:
 	Vec2f minOffset_;
 	Vec2f maxOffset_;
 	bool offsetOutsideEdge_;
+
+	GPUCommon *gpuCommon_;
+
+	// Software depth raster
+	bool useDepthRaster_ = false;
+
+	float *depthTransformed_ = nullptr;
+	int *depthScreenVerts_ = nullptr;
+	uint16_t *depthIndices_ = nullptr;
+
+	// Queue
+	int depthVertexCount_ = 0;
+	int depthIndexCount_ = 0;
+	std::vector<DepthDraw> depthDraws_;
+
+	double rasterTimeStart_ = 0.0;
 };

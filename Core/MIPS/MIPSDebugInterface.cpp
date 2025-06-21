@@ -32,7 +32,7 @@
 #include "Core/HLE/sceKernelThread.h"
 #include "Core/MemMap.h"
 #include "Core/MIPS/MIPSTables.h"
-#include "Core/MIPS/MIPS.h"
+#include "Core/Core.h"
 #include "Core/System.h"
 
 enum ReferenceIndexType {
@@ -52,10 +52,9 @@ enum ReferenceIndexType {
 };
 
 
-class MipsExpressionFunctions: public IExpressionFunctions
-{
+class MipsExpressionFunctions : public IExpressionFunctions {
 public:
-	MipsExpressionFunctions(DebugInterface* cpu): cpu(cpu) { }
+	MipsExpressionFunctions(const DebugInterface *_cpu): cpu(_cpu) {}
 
 	bool parseReference(char* str, uint32_t& referenceIndex) override
 	{
@@ -64,12 +63,12 @@ public:
 			char reg[8];
 			snprintf(reg, sizeof(reg), "r%d", i);
 
-			if (strcasecmp(str, reg) == 0 || strcasecmp(str, cpu->GetRegName(0, i).c_str()) == 0)
+			if (strcasecmp(str, reg) == 0 || strcasecmp(str, MIPSDebugInterface::GetRegName(0, i).c_str()) == 0)
 			{
 				referenceIndex = i;
 				return true;
 			}
-			else if (strcasecmp(str, cpu->GetRegName(1, i).c_str()) == 0)
+			else if (strcasecmp(str, MIPSDebugInterface::GetRegName(1, i).c_str()) == 0)
 			{
 				referenceIndex = REF_INDEX_FPU | i;
 				return true;
@@ -85,7 +84,7 @@ public:
 
 		for (int i = 0; i < 128; i++)
 		{
-			if (strcasecmp(str, cpu->GetRegName(2, i).c_str()) == 0)
+			if (strcasecmp(str, MIPSDebugInterface::GetRegName(2, i).c_str()) == 0)
 			{
 				referenceIndex = REF_INDEX_VFPU | i;
 				return true;
@@ -200,17 +199,8 @@ public:
 	}
 
 private:
-	DebugInterface* cpu;
+	const DebugInterface *cpu;
 };
-
-
-
-void MIPSDebugInterface::DisAsm(u32 pc, char *out, size_t outSize) {
-	if (Memory::IsValidAddress(pc))
-		MIPSDisAsm(Memory::Read_Opcode_JIT(pc), pc, out, outSize);
-	else
-		truncate_cpy(out, outSize, "-");
-}
 
 unsigned int MIPSDebugInterface::readMemory(unsigned int address) {
 	if (Memory::IsValidRange(address, 4))
@@ -220,61 +210,48 @@ unsigned int MIPSDebugInterface::readMemory(unsigned int address) {
 
 bool MIPSDebugInterface::isAlive()
 {
-	return PSP_IsInited() && coreState != CORE_BOOT_ERROR && coreState != CORE_RUNTIME_ERROR && coreState != CORE_POWERDOWN;
+	return PSP_GetBootState() == BootState::Complete && coreState != CORE_RUNTIME_ERROR && coreState != CORE_POWERDOWN;
 }
 
 bool MIPSDebugInterface::isBreakpoint(unsigned int address) 
 {
-	return CBreakPoints::IsAddressBreakPoint(address);
+	return g_breakpoints.IsAddressBreakPoint(address);
 }
 
-void MIPSDebugInterface::setBreakpoint(unsigned int address)
-{
-	CBreakPoints::AddBreakPoint(address);
+void MIPSDebugInterface::setBreakpoint(unsigned int address) {
+	g_breakpoints.AddBreakPoint(address);
 }
-void MIPSDebugInterface::clearBreakpoint(unsigned int address)
-{
-	CBreakPoints::RemoveBreakPoint(address);
+
+void MIPSDebugInterface::clearBreakpoint(unsigned int address) {
+	g_breakpoints.RemoveBreakPoint(address);
 }
+
 void MIPSDebugInterface::clearAllBreakpoints() {}
-void MIPSDebugInterface::toggleBreakpoint(unsigned int address)
-{
-	CBreakPoints::IsAddressBreakPoint(address)?CBreakPoints::RemoveBreakPoint(address):CBreakPoints::AddBreakPoint(address);
+
+void MIPSDebugInterface::toggleBreakpoint(unsigned int address) {
+	if (g_breakpoints.IsAddressBreakPoint(address)) {
+		g_breakpoints.RemoveBreakPoint(address);
+	} else {
+		g_breakpoints.AddBreakPoint(address);
+	}
 }
 
+int MIPSDebugInterface::getColor(unsigned int address, bool darkMode) const {
+	uint32_t colors[6] = { 0xFFe0FFFF, 0xFFFFe0e0, 0xFFe8e8FF, 0xFFFFe0FF, 0xFFe0FFe0, 0xFFFFFFe0 };
+	uint32_t colorsDark[6] = { 0xFF301010, 0xFF103030, 0xFF403010, 0xFF103000, 0xFF301030, 0xFF101030 };
 
-int MIPSDebugInterface::getColor(unsigned int address)
-{
-	int colors[6] = {0xe0FFFF,0xFFe0e0,0xe8e8FF,0xFFe0FF,0xe0FFe0,0xFFFFe0};
-	int n=g_symbolMap->GetFunctionNum(address);
-	if (n==-1) return 0xFFFFFF;
-	return colors[n%6];
+	int n = g_symbolMap->GetFunctionNum(address);
+	if (n == -1) {
+		return darkMode ? 0xFF101010 : 0xFFFFFFFF;
+	} else if (darkMode) {
+		return colorsDark[n % ARRAY_SIZE(colorsDark)];
+	} else {
+		return colors[n % ARRAY_SIZE(colors)];
+	}
 }
-std::string MIPSDebugInterface::getDescription(unsigned int address) 
-{
+
+std::string MIPSDebugInterface::getDescription(unsigned int address) {
 	return g_symbolMap->GetDescription(address);
-}
-
-bool MIPSDebugInterface::initExpression(const char* exp, PostfixExpression& dest)
-{
-	MipsExpressionFunctions funcs(this);
-	return initPostfixExpression(exp,&funcs,dest);
-}
-
-bool MIPSDebugInterface::parseExpression(PostfixExpression& exp, u32& dest)
-{
-	MipsExpressionFunctions funcs(this);
-	return parsePostfixExpression(exp,&funcs,dest);
-}
-
-void MIPSDebugInterface::runToBreakpoint() 
-{
-
-}
-
-const char *MIPSDebugInterface::GetName()
-{
-	return ("R4");
 }
 
 std::string MIPSDebugInterface::GetRegName(int cat, int index) {
@@ -295,9 +272,9 @@ std::string MIPSDebugInterface::GetRegName(int cat, int index) {
 		"f24", "f25", "f26", "f27", "f28", "f29", "f30", "f31",
 	};
 
-	if (cat == 0 && (unsigned)index < sizeof(regName)) {
+	if (cat == 0 && (unsigned)index < ARRAY_SIZE(regName)) {
 		return regName[index];
-	} else if (cat == 1 && (unsigned)index < sizeof(fpRegName)) {
+	} else if (cat == 1 && (unsigned)index < ARRAY_SIZE(fpRegName)) {
 		return fpRegName[index];
 	} else if (cat == 2) {
 		return GetVectorNotation(index, V_Single);
@@ -305,3 +282,19 @@ std::string MIPSDebugInterface::GetRegName(int cat, int index) {
 	return "???";
 }
 
+bool initExpression(const DebugInterface *debug, const char* exp, PostfixExpression& dest) {
+	MipsExpressionFunctions funcs(debug);
+	return initPostfixExpression(exp, &funcs, dest);
+}
+
+bool parseExpression(const DebugInterface *debug, PostfixExpression& exp, u32& dest) {
+	MipsExpressionFunctions funcs(debug);
+	return parsePostfixExpression(exp, &funcs, dest);
+}
+
+void DisAsm(u32 pc, char *out, size_t outSize) {
+	if (Memory::IsValidAddress(pc))
+		MIPSDisAsm(Memory::Read_Opcode_JIT(pc), pc, out, outSize);
+	else
+		truncate_cpy(out, outSize, "-");
+}

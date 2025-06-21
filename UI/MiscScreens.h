@@ -97,9 +97,6 @@ public:
 	const char *tag() const override { return "Prompt"; }
 
 private:
-	UI::EventReturn OnYes(UI::EventParams &e);
-	UI::EventReturn OnNo(UI::EventParams &e);
-
 	std::string message_;
 	std::string yesButtonText_;
 	std::string noButtonText_;
@@ -170,7 +167,6 @@ public:
 	const char *tag() const override { return "Credits"; }
 
 private:
-	UI::EventReturn OnSupport(UI::EventParams &e);
 	UI::EventReturn OnPPSSPPOrg(UI::EventParams &e);
 	UI::EventReturn OnPrivacy(UI::EventParams &e);
 	UI::EventReturn OnForums(UI::EventParams &e);
@@ -195,6 +191,15 @@ private:
 	double timeShown_ = 0.0;
 	float cutOffY_;
 	bool showing_ = false;
+};
+
+class ShinyIcon : public UI::ImageView {
+public:
+	ShinyIcon(ImageID atlasImage, UI::LayoutParams *layoutParams = 0) : UI::ImageView(atlasImage, "", UI::IS_DEFAULT, layoutParams) {}
+	void Draw(UIContext &dc) override;
+	void SetAnimated(bool anim) { animated_ = anim; }
+private:
+	bool animated_ = true;
 };
 
 uint32_t GetBackgroundColorWithAlpha(const UIContext &dc);

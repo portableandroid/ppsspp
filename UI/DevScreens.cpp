@@ -28,6 +28,7 @@
 #include "ppsspp_config.h"
 
 #include "Common/Common.h"
+#include "Common/Audio/AudioBackend.h"
 #include "Common/System/Display.h"
 #include "Common/System/NativeApp.h"
 #include "Common/System/System.h"
@@ -36,6 +37,7 @@
 
 #include "Common/File/AndroidStorage.h"
 #include "Common/Data/Text/I18n.h"
+#include "Common/Data/Text/Parsers.h"
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/Net/HTTPClient.h"
 #include "Common/UI/Context.h"
@@ -43,12 +45,13 @@
 #include "Common/UI/ViewGroup.h"
 #include "Common/UI/UI.h"
 #include "Common/UI/IconCache.h"
-#include "Common/Data/Text/Parsers.h"
+#include "Common/Render/Text/draw_text.h"
 #include "Common/Profiler/Profiler.h"
 
 #include "Common/Log/LogManager.h"
 #include "Common/CPUDetect.h"
 #include "Common/StringUtils.h"
+#include "Common/GPU/ShaderWriter.h"
 
 #include "Core/MemMap.h"
 #include "Core/Config.h"
@@ -62,13 +65,14 @@
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/MIPS/JitCommon/JitState.h"
 #include "GPU/Debugger/Record.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
 #include "UI/MiscScreens.h"
 #include "UI/DevScreens.h"
 #include "UI/MainScreen.h"
+#include "UI/EmuScreen.h"
 #include "UI/ControlMappingScreen.h"
-#include "UI/GameSettingsScreen.h"
+#include "UI/DeveloperToolsScreen.h"
 #include "UI/JitCompareScreen.h"
 
 #ifdef _WIN32
@@ -112,6 +116,20 @@ void AddOverlayList(UI::ViewGroup *items, ScreenManager *screenManager) {
 	items->Add(new PopupMultiChoice((int *)&g_Config.iDebugOverlay, dev->T("Debug overlay"), g_debugOverlayList, 0, numOverlays, I18NCat::DEVELOPER, screenManager));
 }
 
+void SaveFrameDump() {
+	if (!gpuDebug) {
+		return;
+	}
+	gpuDebug->GetRecorder()->RecordNextFrame([](const Path &dumpPath) {
+		NOTICE_LOG(Log::System, "Frame dump created at '%s'", dumpPath.c_str());
+		if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
+			System_ShowFileInFolder(dumpPath);
+		} else {
+			g_OSD.Show(OSDType::MESSAGE_SUCCESS, dumpPath.ToVisualString(), 7.0f);
+		}
+	});
+}
+
 void DevMenuScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	using namespace UI;
 	auto dev = GetI18NCategory(I18NCat::DEVELOPER);
@@ -120,10 +138,23 @@ void DevMenuScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	ScrollView *scroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 1.0f));
 	LinearLayout *items = new LinearLayout(ORIENT_VERTICAL);
 
-#if !defined(MOBILE_DEVICE)
-	items->Add(new Choice(dev->T("Log View")))->OnClick.Handle(this, &DevMenuScreen::OnLogView);
-#endif
-	items->Add(new Choice(dev->T("Logging Channels")))->OnClick.Handle(this, &DevMenuScreen::OnLogConfig);
+	items->Add(new Choice(dev->T("Log View")))->OnClick.Add([this](UI::EventParams & e) {
+		UpdateUIState(UISTATE_PAUSEMENU);
+		screenManager()->push(new LogViewScreen());
+		return UI::EVENT_DONE;
+	});
+
+	items->Add(new Choice(dev->T("Logging Channels")))->OnClick.Add([this](UI::EventParams & e) {
+		UpdateUIState(UISTATE_PAUSEMENU);
+		screenManager()->push(new LogConfigScreen());
+		return UI::EVENT_DONE;
+	});
+
+	items->Add(new Choice(dev->T("Debugger")))->OnClick.Add([](UI::EventParams &e) {
+		g_Config.bShowImDebugger = !g_Config.bShowImDebugger;
+		return UI::EVENT_DONE;
+	});
+
 	items->Add(new Choice(sy->T("Developer Tools")))->OnClick.Handle(this, &DevMenuScreen::OnDeveloperTools);
 
 	// Debug overlay
@@ -148,17 +179,12 @@ void DevMenuScreen::CreatePopupContents(UI::ViewGroup *parent) {
 		return UI::EVENT_DONE;
 	});
 
-	items->Add(new Choice(dev->T("Create frame dump")))->OnClick.Add([](UI::EventParams &e) {
-		GPURecord::RecordNextFrame([](const Path &dumpPath) {
-			NOTICE_LOG(Log::System, "Frame dump created at '%s'", dumpPath.c_str());
-			if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
-				System_ShowFileInFolder(dumpPath);
-			} else {
-				g_OSD.Show(OSDType::MESSAGE_SUCCESS, dumpPath.ToVisualString(), 7.0f);
-			}
+	if (PSP_CoreParameter().fileType != IdentifiedFileType::PPSSPP_GE_DUMP) {
+		items->Add(new Choice(dev->T("Create frame dump")))->OnClick.Add([](UI::EventParams &e) {
+			SaveFrameDump();
+			return UI::EVENT_DONE;
 		});
-		return UI::EVENT_DONE;
-	});
+	}
 
 	// This one is not very useful these days, and only really on desktop. Hide it on other platforms.
 	if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_DESKTOP) {
@@ -171,26 +197,11 @@ void DevMenuScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	scroll->Add(items);
 	parent->Add(scroll);
 
-	RingbufferLogListener *ring = LogManager::GetInstance()->GetRingbufferListener();
-	if (ring) {
-		ring->SetEnabled(true);
-	}
+	g_logManager.EnableOutput(LogOutput::RingBuffer);
 }
 
 UI::EventReturn DevMenuScreen::OnResetLimitedLogging(UI::EventParams &e) {
 	Reporting::ResetCounts();
-	return UI::EVENT_DONE;
-}
-
-UI::EventReturn DevMenuScreen::OnLogView(UI::EventParams &e) {
-	UpdateUIState(UISTATE_PAUSEMENU);
-	screenManager()->push(new LogScreen());
-	return UI::EVENT_DONE;
-}
-
-UI::EventReturn DevMenuScreen::OnLogConfig(UI::EventParams &e) {
-	UpdateUIState(UISTATE_PAUSEMENU);
-	screenManager()->push(new LogConfigScreen());
 	return UI::EVENT_DONE;
 }
 
@@ -230,14 +241,16 @@ void GPIGPOScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	}
 }
 
-void LogScreen::UpdateLog() {
+void LogViewScreen::UpdateLog() {
 	using namespace UI;
-	RingbufferLogListener *ring = LogManager::GetInstance()->GetRingbufferListener();
+	const RingbufferLog *ring = g_logManager.GetRingbuffer();
 	if (!ring)
 		return;
 	vert_->Clear();
+
+	// TODO: Direct rendering without TextViews.
 	for (int i = ring->GetCount() - 1; i >= 0; i--) {
-		TextView *v = vert_->Add(new TextView(ring->TextAt(i), FLAG_DYNAMIC_ASCII, false));
+		TextView *v = vert_->Add(new TextView(StripSpaces(ring->TextAt(i)), FLAG_DYNAMIC_ASCII, true));
 		uint32_t color = 0xFFFFFF;
 		switch (ring->LevelAt(i)) {
 		case LogLevel::LDEBUG: color = 0xE0E0E0; break;
@@ -252,7 +265,7 @@ void LogScreen::UpdateLog() {
 	toBottom_ = true;
 }
 
-void LogScreen::update() {
+void LogViewScreen::update() {
 	UIDialogScreenWithBackground::update();
 	if (toBottom_) {
 		toBottom_ = false;
@@ -260,7 +273,7 @@ void LogScreen::update() {
 	}
 }
 
-void LogScreen::CreateViews() {
+void LogViewScreen::CreateViews() {
 	using namespace UI;
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 
@@ -270,27 +283,11 @@ void LogScreen::CreateViews() {
 	scroll_ = outer->Add(new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(1.0)));
 	LinearLayout *bottom = outer->Add(new LinearLayout(ORIENT_HORIZONTAL, new LayoutParams(FILL_PARENT, WRAP_CONTENT)));
 	bottom->Add(new Button(di->T("Back")))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
-	cmdLine_ = bottom->Add(new TextEdit("", "Command", "Command Line", new LinearLayoutParams(1.0)));
-	cmdLine_->OnEnter.Handle(this, &LogScreen::OnSubmit);
-	bottom->Add(new Button(di->T("Submit")))->OnClick.Handle(this, &LogScreen::OnSubmit);
 
 	vert_ = scroll_->Add(new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 	vert_->SetSpacing(0);
 
 	UpdateLog();
-}
-
-UI::EventReturn LogScreen::OnSubmit(UI::EventParams &e) {
-	std::string cmd = cmdLine_->GetText();
-
-	// TODO: Can add all sorts of fun stuff here that we can't be bothered writing proper UI for, like various memdumps etc.
-
-	NOTICE_LOG(Log::System, "Submitted: %s", cmd.c_str());
-
-	UpdateLog();
-	cmdLine_->SetText("");
-	cmdLine_->SetFocus();
-	return UI::EVENT_DONE;
 }
 
 void LogConfigScreen::CreateViews() {
@@ -315,8 +312,6 @@ void LogConfigScreen::CreateViews() {
 
 	vert->Add(new ItemHeader(dev->T("Logging Channels")));
 
-	LogManager *logMan = LogManager::GetInstance();
-
 	int cellSize = 400;
 
 	UI::GridLayoutSettings gridsettings(cellSize, 64, 5);
@@ -325,37 +320,34 @@ void LogConfigScreen::CreateViews() {
 
 	for (int i = 0; i < LogManager::GetNumChannels(); i++) {
 		Log type = (Log)i;
-		LogChannel *chan = logMan->GetLogChannel(type);
+		LogChannel *chan = g_logManager.GetLogChannel(type);
 		LinearLayout *row = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(cellSize - 50, WRAP_CONTENT));
 		row->SetSpacing(0);
 		row->Add(new CheckBox(&chan->enabled, "", "", new LinearLayoutParams(50, WRAP_CONTENT)));
-		row->Add(new PopupMultiChoice((int *)&chan->level, chan->m_shortName, logLevelList, 1, 6, I18NCat::NONE, screenManager(), new LinearLayoutParams(1.0)));
+		row->Add(new PopupMultiChoice((int *)&chan->level, LogManager::GetLogTypeName(type), logLevelList, 1, 6, I18NCat::NONE, screenManager(), new LinearLayoutParams(1.0)));
 		grid->Add(row);
 	}
 }
 
 UI::EventReturn LogConfigScreen::OnToggleAll(UI::EventParams &e) {
-	LogManager *logMan = LogManager::GetInstance();
 	for (int i = 0; i < LogManager::GetNumChannels(); i++) {
-		LogChannel *chan = logMan->GetLogChannel((Log)i);
+		LogChannel *chan = g_logManager.GetLogChannel((Log)i);
 		chan->enabled = !chan->enabled;
 	}
 	return UI::EVENT_DONE;
 }
 
 UI::EventReturn LogConfigScreen::OnEnableAll(UI::EventParams &e) {
-	LogManager *logMan = LogManager::GetInstance();
 	for (int i = 0; i < LogManager::GetNumChannels(); i++) {
-		LogChannel *chan = logMan->GetLogChannel((Log)i);
+		LogChannel *chan = g_logManager.GetLogChannel((Log)i);
 		chan->enabled = true;
 	}
 	return UI::EVENT_DONE;
 }
 
 UI::EventReturn LogConfigScreen::OnDisableAll(UI::EventParams &e) {
-	LogManager *logMan = LogManager::GetInstance();
 	for (int i = 0; i < LogManager::GetNumChannels(); i++) {
-		LogChannel *chan = logMan->GetLogChannel((Log)i);
+		LogChannel *chan = g_logManager.GetLogChannel((Log)i);
 		chan->enabled = false;
 	}
 	return UI::EVENT_DONE;
@@ -392,11 +384,10 @@ void LogLevelScreen::OnCompleted(DialogResult result) {
 	if (result != DR_OK)
 		return;
 	int selected = listView_->GetSelected();
-	LogManager *logMan = LogManager::GetInstance();
 	
 	for (int i = 0; i < LogManager::GetNumChannels(); ++i) {
 		Log type = (Log)i;
-		LogChannel *chan = logMan->GetLogChannel(type);
+		LogChannel *chan = g_logManager.GetLogChannel(type);
 		if (chan->enabled)
 			chan->level = (LogLevel)(selected + 1);
 	}
@@ -476,18 +467,91 @@ void SystemInfoScreen::update() {
 	g_OSD.NudgeSidebar();
 }
 
+// TODO: How can we de-duplicate this and SystemInfoScreen::CreateTabs?
+UI::EventReturn SystemInfoScreen::CopySummaryToClipboard(UI::EventParams &e) {
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	auto si = GetI18NCategory(I18NCat::DIALOG);
+
+	char *summary = new char[100000];
+	StringWriter w(summary, 100000);
+
+	std::string_view build = "Release";
+#ifdef _DEBUG
+	build = "Debug";
+#endif
+	w.W(PPSSPP_GIT_VERSION).C(" ").W(build).endl();
+	w.C("CPU: ").W(cpu_info.cpu_string).endl();
+	w.C("ABI: ").W(GetCompilerABI()).endl();
+	w.C("OS: ").W(System_GetProperty(SYSPROP_NAME)).C(" ").W(System_GetProperty(SYSPROP_SYSTEMBUILD)).endl();
+	w.C("Page Size: ").W(StringFromFormat(si->T_cstr("%d bytes"), GetMemoryProtectPageSize())).endl();
+	w.C("RW/RX exclusive: ").W(PlatformIsWXExclusive() ? "Yes" : "No").endl();
+
+	std::string board = System_GetProperty(SYSPROP_BOARDNAME);
+	if (!board.empty())
+		w.C("Board: ").W(board).endl();
+	Draw::DrawContext *draw = screenManager()->getDrawContext();
+	w.C("3D API: ").W(draw->GetInfoString(Draw::InfoField::APINAME)).endl();
+	w.C("API version: ").W(draw->GetInfoString(Draw::InfoField::APIVERSION)).endl();
+	w.C("Device API version: ").W(draw->GetInfoString(Draw::InfoField::DEVICE_API_VERSION)).endl();
+	w.C("Vendor: ").W(draw->GetInfoString(Draw::InfoField::VENDOR)).endl();
+	w.C("VendorString: ").W(draw->GetInfoString(Draw::InfoField::VENDORSTRING)).endl();
+	w.C("Driver: ").W(draw->GetInfoString(Draw::InfoField::DRIVER)).endl();
+	w.C("Depth buffer format: ").W(DataFormatToString(draw->GetDeviceCaps().preferredDepthBufferFormat)).endl();
+	w.C("Refresh rate: ").W(StringFromFormat(si->T_cstr("%0.2f Hz"), (float)System_GetPropertyFloat(SYSPROP_DISPLAY_REFRESH_RATE))).endl();
+
+	System_CopyStringToClipboard(summary);
+	delete[] summary;
+
+	g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), si->T("System Information")));
+	return UI::EVENT_DONE;
+}
+
 void SystemInfoScreen::CreateTabs() {
+	using namespace Draw;
+	using namespace UI;
+
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
+
+	AddTab("Device Info", si->T("Device Info"), [this](UI::LinearLayout *parent) {
+		CreateDeviceInfoTab(parent);
+	});
+	AddTab("Storage", si->T("Storage"), [this](UI::LinearLayout *parent) {
+		CreateStorageTab(parent);
+	});
+	AddTab("DevSystemInfoBuildConfig", si->T("Build Config"), [this](UI::LinearLayout *parent) {
+		CreateBuildConfigTab(parent);
+	});
+	AddTab("DevSystemInfoCPUExt", si->T("CPU Extensions"), [this](UI::LinearLayout *parent) {
+		CreateCPUExtensionsTab(parent);
+	});
+	if (GetGPUBackend() == GPUBackend::OPENGL) {
+		AddTab("DevSystemInfoOGLExt", si->T("OGL Extensions"), [this](UI::LinearLayout *parent) {
+			CreateOpenGLExtsTab(parent);
+		});
+	} else if (GetGPUBackend() == GPUBackend::VULKAN) {
+		AddTab("DevSystemInfoVulkanExt", si->T("Vulkan Extensions"), [this](UI::LinearLayout *parent) {
+			CreateVulkanExtsTab(parent);
+		});
+	}
+	AddTab("DevSystemInfoDriverBugs", si->T("Driver bugs"), [this](UI::LinearLayout *parent) {
+		CreateDriverBugsTab(parent);
+	});
+	AddTab("DevSystemInfoInternals", si->T("Internals"), [this](UI::LinearLayout *parent) {
+		CreateInternalsTab(parent);
+	});
+}
+
+void SystemInfoScreen::CreateDeviceInfoTab(UI::LinearLayout *deviceSpecs) {
 	using namespace Draw;
 	using namespace UI;
 
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto si = GetI18NCategory(I18NCat::SYSINFO);
-	auto sy = GetI18NCategory(I18NCat::SYSTEM);
 	auto gr = GetI18NCategory(I18NCat::GRAPHICS);
 
-	LinearLayout *deviceSpecs = AddTab("Device Info", si->T("Device Info"));
+	UI::CollapsibleSection *systemInfo = deviceSpecs->Add(new UI::CollapsibleSection(si->T("System Information")));
 
-	CollapsibleSection *systemInfo = deviceSpecs->Add(new CollapsibleSection(si->T("System Information")));
+	systemInfo->Add(new Choice(si->T("Copy summary to clipboard")))->OnClick.Handle(this, &SystemInfoScreen::CopySummaryToClipboard);
 	systemInfo->Add(new InfoItem(si->T("System Name", "Name"), System_GetProperty(SYSPROP_NAME)));
 #if PPSSPP_PLATFORM(ANDROID)
 	systemInfo->Add(new InfoItem(si->T("System Version"), StringFromInt(System_GetPropertyInt(SYSPROP_SYSTEMVERSION))));
@@ -506,7 +570,7 @@ void SystemInfoScreen::CreateTabs() {
 		systemInfo->Add(new InfoItem(si->T("Debugger Present"), di->T("Yes")));
 	}
 
-	CollapsibleSection *cpuInfo = deviceSpecs->Add(new CollapsibleSection(si->T("CPU Information")));
+	UI::CollapsibleSection *cpuInfo = deviceSpecs->Add(new UI::CollapsibleSection(si->T("CPU Information")));
 
 	// Don't bother showing the CPU name if we don't have one.
 	if (strcmp(cpu_info.brand_string, "Unknown") != 0) {
@@ -544,11 +608,6 @@ void SystemInfoScreen::CreateTabs() {
 	if (GetGPUBackend() != GPUBackend::VULKAN) {
 		gpuInfo->Add(new InfoItem(si->T("Driver Version"), System_GetProperty(SYSPROP_GPUDRIVER_VERSION)));
 	}
-#if !PPSSPP_PLATFORM(UWP)
-	if (GetGPUBackend() == GPUBackend::DIRECT3D9) {
-		gpuInfo->Add(new InfoItem(si->T("D3DCompiler Version"), StringFromFormat("%d", GetD3DCompilerVersion())));
-	}
-#endif
 #endif
 	if (GetGPUBackend() == GPUBackend::OPENGL) {
 		gpuInfo->Add(new InfoItem(si->T("Core Context"), gl_extensions.IsCoreContext ? di->T("Active") : di->T("Inactive")));
@@ -592,7 +651,14 @@ void SystemInfoScreen::CreateTabs() {
 	osInformation->Add(new InfoItem(si->T("PPSSPP build"), build));
 
 	CollapsibleSection *audioInformation = deviceSpecs->Add(new CollapsibleSection(si->T("Audio Information")));
-	audioInformation->Add(new InfoItem(si->T("Sample rate"), StringFromFormat(si->T_cstr("%d Hz"), System_GetPropertyInt(SYSPROP_AUDIO_SAMPLE_RATE))));
+	extern AudioBackend *g_audioBackend;
+	if (g_audioBackend) {
+		char fmtStr[256];
+		g_audioBackend->DescribeOutputFormat(fmtStr, sizeof(fmtStr));
+		audioInformation->Add(new InfoItem(si->T("Stream format"), fmtStr));
+	} else {
+		audioInformation->Add(new InfoItem(si->T("Sample rate"), StringFromFormat(si->T_cstr("%d Hz"), System_GetPropertyInt(SYSPROP_AUDIO_SAMPLE_RATE))));
+	}
 	int framesPerBuffer = System_GetPropertyInt(SYSPROP_AUDIO_FRAMES_PER_BUFFER);
 	if (framesPerBuffer > 0) {
 		audioInformation->Add(new InfoItem(si->T("Frames per buffer"), StringFromFormat("%d", framesPerBuffer)));
@@ -608,11 +674,11 @@ void SystemInfoScreen::CreateTabs() {
 		System_GetPropertyInt(SYSPROP_DISPLAY_XRES),
 		System_GetPropertyInt(SYSPROP_DISPLAY_YRES))));
 #endif
-	displayInfo->Add(new InfoItem(si->T("UI resolution"), StringFromFormat("%dx%d (%s: %0.2f)",
+	displayInfo->Add(new InfoItem(si->T("UI resolution"), StringFromFormat("%dx%d (%s: %d)",
 		g_display.dp_xres,
 		g_display.dp_yres,
 		si->T_cstr("DPI"),
-		g_display.dpi)));
+		System_GetPropertyInt(SYSPROP_DISPLAY_DPI))));
 	displayInfo->Add(new InfoItem(si->T("Pixel resolution"), StringFromFormat("%dx%d",
 		g_display.pixel_xres,
 		g_display.pixel_yres)));
@@ -656,7 +722,7 @@ void SystemInfoScreen::CreateTabs() {
 
 		if (GetGPUBackend() == GPUBackend::VULKAN) {
 			std::string deviceApiVersion = draw->GetInfoString(InfoField::DEVICE_API_VERSION);
-			versionInfo->Add(new InfoItem(si->T("Device API Version"), deviceApiVersion));
+			versionInfo->Add(new InfoItem(si->T("Device API version"), deviceApiVersion));
 		}
 	}
 	versionInfo->Add(new InfoItem(si->T("Shading Language"), draw->GetInfoString(InfoField::SHADELANGVERSION)));
@@ -681,8 +747,12 @@ void SystemInfoScreen::CreateTabs() {
 			}
 		}
 	}
+}
 
-	LinearLayout *storage = AddTab("Storage", si->T("Storage"));
+void SystemInfoScreen::CreateStorageTab(UI::LinearLayout *storage) {
+	using namespace UI;
+
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
 
 	storage->Add(new ItemHeader(si->T("Directories")));
 	// Intentionally non-translated
@@ -692,6 +762,7 @@ void SystemInfoScreen::CreateTabs() {
 	storage->Add(new InfoItem("DefaultCurrentDir", g_Config.defaultCurrentDirectory.ToVisualString()));
 
 #if PPSSPP_PLATFORM(ANDROID)
+	auto di = GetI18NCategory(I18NCat::DIALOG);
 	storage->Add(new InfoItem("ExtFilesDir", g_extFilesDir));
 	bool scoped = System_GetPropertyBool(SYSPROP_ANDROID_SCOPED_STORAGE);
 	storage->Add(new InfoItem("Scoped Storage", scoped ? di->T("Yes") : di->T("No")));
@@ -700,13 +771,14 @@ void SystemInfoScreen::CreateTabs() {
 		storage->Add(new InfoItem("IsStoragePreservedLegacy", Android_IsExternalStoragePreservedLegacy() ? di->T("Yes") : di->T("No")));
 	}
 #endif
+}
 
-	LinearLayout *buildConfig = AddTab("DevSystemInfoBuildConfig", si->T("Build Config"));
+void SystemInfoScreen::CreateBuildConfigTab(UI::LinearLayout *buildConfig) {
+	using namespace UI;
+
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
 
 	buildConfig->Add(new ItemHeader(si->T("Build Configuration")));
-#ifdef JENKINS
-	buildConfig->Add(new InfoItem(si->T("Built by"), "Jenkins"));
-#endif
 #ifdef ANDROID_LEGACY
 	buildConfig->Add(new InfoItem("ANDROID_LEGACY", ""));
 #endif
@@ -736,17 +808,28 @@ void SystemInfoScreen::CreateTabs() {
 	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
 		buildConfig->Add(new InfoItem("GOLD", ""));
 	}
+}
 
-	LinearLayout *cpuExtensions = AddTab("DevSystemInfoCPUExt", si->T("CPU Extensions"));
+void SystemInfoScreen::CreateCPUExtensionsTab(UI::LinearLayout *cpuExtensions) {
+	using namespace UI;
+
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
+
 	cpuExtensions->Add(new ItemHeader(si->T("CPU Extensions")));
 	std::vector<std::string> exts = cpu_info.Features();
 	for (std::string &ext : exts) {
 		cpuExtensions->Add(new TextView(ext, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
 	}
+}
 
-	LinearLayout *driverBugs = AddTab("DevSystemInfoDriverBugs", si->T("Driver bugs"));
+void SystemInfoScreen::CreateDriverBugsTab(UI::LinearLayout *driverBugs) {
+	using namespace UI;
+	using namespace Draw;
+
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
 
 	bool anyDriverBugs = false;
+	Draw::DrawContext *draw = screenManager()->getDrawContext();
 	for (int i = 0; i < (int)draw->GetBugs().MaxBugIndex(); i++) {
 		if (draw->GetBugs().Has(i)) {
 			anyDriverBugs = true;
@@ -757,90 +840,92 @@ void SystemInfoScreen::CreateTabs() {
 	if (!anyDriverBugs) {
 		driverBugs->Add(new TextView(si->T("No GPU driver bugs detected"), new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
 	}
+}
 
-	if (GetGPUBackend() == GPUBackend::OPENGL) {
-		LinearLayout *gpuExtensions = AddTab("DevSystemInfoOGLExt", si->T("OGL Extensions"));
+void SystemInfoScreen::CreateOpenGLExtsTab(UI::LinearLayout *gpuExtensions) {
+	using namespace UI;
 
-		if (!gl_extensions.IsGLES) {
-			gpuExtensions->Add(new ItemHeader(si->T("OpenGL Extensions")));
-		} else if (gl_extensions.GLES3) {
-			gpuExtensions->Add(new ItemHeader(si->T("OpenGL ES 3.0 Extensions")));
-		} else {
-			gpuExtensions->Add(new ItemHeader(si->T("OpenGL ES 2.0 Extensions")));
-		}
-		exts.clear();
-		SplitString(g_all_gl_extensions, ' ', exts);
-		std::sort(exts.begin(), exts.end());
-		for (auto &extension : exts) {
-			gpuExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-		}
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
+	Draw::DrawContext *draw = screenManager()->getDrawContext();
 
-		exts.clear();
-		SplitString(g_all_egl_extensions, ' ', exts);
-		std::sort(exts.begin(), exts.end());
-
-		// If there aren't any EGL extensions, no need to show the tab.
-		if (exts.size() > 0) {
-			LinearLayout *eglExtensions = AddTab("EglExt", si->T("EGL Extensions"));
-			eglExtensions->SetSpacing(0);
-			eglExtensions->Add(new ItemHeader(si->T("EGL Extensions")));
-			for (auto &extension : exts) {
-				eglExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-			}
-		}
-	} else if (GetGPUBackend() == GPUBackend::VULKAN) {
-		LinearLayout *gpuExtensions = AddTab("DevSystemInfoOGLExt", si->T("Vulkan Features"));
-
-		CollapsibleSection *vulkanFeatures = gpuExtensions->Add(new CollapsibleSection(si->T("Vulkan Features")));
-		std::vector<std::string> features = draw->GetFeatureList();
-		for (auto &feature : features) {
-			vulkanFeatures->Add(new TextView(feature, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-		}
-
-		CollapsibleSection *presentModes = gpuExtensions->Add(new CollapsibleSection(si->T("Present modes")));
-		for (auto mode : draw->GetPresentModeList(di->T("Current"))) {
-			presentModes->Add(new TextView(mode, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-		}
-
-		CollapsibleSection *colorFormats = gpuExtensions->Add(new CollapsibleSection(si->T("Display Color Formats")));
-		for (auto &format : draw->GetSurfaceFormatList()) {
-			colorFormats->Add(new TextView(format, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-		}
-
-		CollapsibleSection *enabledExtensions = gpuExtensions->Add(new CollapsibleSection(std::string(si->T("Vulkan Extensions")) + " (" + std::string(di->T("Enabled")) + ")"));
-		std::vector<std::string> extensions = draw->GetExtensionList(true, true);
-		std::sort(extensions.begin(), extensions.end());
-		for (auto &extension : extensions) {
-			enabledExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-		}
-		// Also get instance extensions
-		enabledExtensions->Add(new ItemHeader(si->T("Instance")));
-		extensions = draw->GetExtensionList(false, true);
-		std::sort(extensions.begin(), extensions.end());
-		for (auto &extension : extensions) {
-			enabledExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-		}
-
-		CollapsibleSection *vulkanExtensions = gpuExtensions->Add(new CollapsibleSection(si->T("Vulkan Extensions")));
-		extensions = draw->GetExtensionList(true, false);
-		std::sort(extensions.begin(), extensions.end());
-		for (auto &extension : extensions) {
-			vulkanExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-		}
-
-		vulkanExtensions->Add(new ItemHeader(si->T("Instance")));
-		// Also get instance extensions
-		extensions = draw->GetExtensionList(false, false);
-		std::sort(extensions.begin(), extensions.end());
-		for (auto &extension : extensions) {
-			vulkanExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
-		}
+	if (!gl_extensions.IsGLES) {
+		gpuExtensions->Add(new ItemHeader(si->T("OpenGL Extensions")));
+	} else if (gl_extensions.GLES3) {
+		gpuExtensions->Add(new ItemHeader(si->T("OpenGL ES 3.0 Extensions")));
+	} else {
+		gpuExtensions->Add(new ItemHeader(si->T("OpenGL ES 2.0 Extensions")));
 	}
 
-#ifdef _DEBUG
-	LinearLayout *internals = AddTab("DevSystemInfoInternals", si->T("Internals"));
-	CreateInternalsTab(internals);
-#endif
+	std::vector<std::string> exts;
+	SplitString(g_all_gl_extensions, ' ', exts);
+	std::sort(exts.begin(), exts.end());
+	for (auto &extension : exts) {
+		gpuExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
+
+	exts.clear();
+	SplitString(g_all_egl_extensions, ' ', exts);
+	std::sort(exts.begin(), exts.end());
+
+	// If there aren't any EGL extensions, no need to show the tab.
+	gpuExtensions->Add(new ItemHeader(si->T("EGL Extensions")));
+	for (auto &extension : exts) {
+		gpuExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
+}
+
+void SystemInfoScreen::CreateVulkanExtsTab(UI::LinearLayout *gpuExtensions) {
+	using namespace UI;
+
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+
+	Draw::DrawContext *draw = screenManager()->getDrawContext();
+
+	CollapsibleSection *vulkanFeatures = gpuExtensions->Add(new CollapsibleSection(si->T("Vulkan Features")));
+	std::vector<std::string> features = draw->GetFeatureList();
+	for (const auto &feature : features) {
+		vulkanFeatures->Add(new TextView(feature, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
+
+	CollapsibleSection *presentModes = gpuExtensions->Add(new CollapsibleSection(si->T("Present modes")));
+	for (const auto &mode : draw->GetPresentModeList(di->T("Current"))) {
+		presentModes->Add(new TextView(mode, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
+
+	CollapsibleSection *colorFormats = gpuExtensions->Add(new CollapsibleSection(si->T("Display Color Formats")));
+	for (const auto &format : draw->GetSurfaceFormatList()) {
+		colorFormats->Add(new TextView(format, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
+
+	CollapsibleSection *enabledExtensions = gpuExtensions->Add(new CollapsibleSection(std::string(si->T("Vulkan Extensions")) + " (" + std::string(di->T("Enabled")) + ")"));
+	std::vector<std::string> extensions = draw->GetExtensionList(true, true);
+	std::sort(extensions.begin(), extensions.end());
+	for (auto &extension : extensions) {
+		enabledExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
+	// Also get instance extensions
+	enabledExtensions->Add(new ItemHeader(si->T("Instance")));
+	extensions = draw->GetExtensionList(false, true);
+	std::sort(extensions.begin(), extensions.end());
+	for (auto &extension : extensions) {
+		enabledExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
+
+	CollapsibleSection *vulkanExtensions = gpuExtensions->Add(new CollapsibleSection(si->T("Vulkan Extensions")));
+	extensions = draw->GetExtensionList(true, false);
+	std::sort(extensions.begin(), extensions.end());
+	for (auto &extension : extensions) {
+		vulkanExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
+
+	vulkanExtensions->Add(new ItemHeader(si->T("Instance")));
+	// Also get instance extensions
+	extensions = draw->GetExtensionList(false, false);
+	std::sort(extensions.begin(), extensions.end());
+	for (auto &extension : extensions) {
+		vulkanExtensions->Add(new TextView(extension, new LayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetFocusable(true);
+	}
 }
 
 void SystemInfoScreen::CreateInternalsTab(UI::ViewGroup *internals) {
@@ -861,6 +946,16 @@ void SystemInfoScreen::CreateInternalsTab(UI::ViewGroup *internals) {
 		RecreateViews();
 		return UI::EVENT_DONE;
 	});
+
+	internals->Add(new ItemHeader(si->T("Font cache")));
+	const TextDrawer *text = screenManager()->getUIContext()->Text();
+	if (text) {
+		internals->Add(new InfoItem(si->T("Texture count"), StringFromFormat("%d", text->GetStringCacheSize())));
+		internals->Add(new InfoItem(si->T("Data size"), NiceSizeFormat(text->GetCacheDataSize())));
+	}
+
+	internals->Add(new ItemHeader(si->T("Slider test")));
+	internals->Add(new Slider(&testSliderValue_, 0, 100, 1, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 
 	internals->Add(new ItemHeader(si->T("Notification tests")));
 	internals->Add(new Choice(si->T("Error")))->OnClick.Add([&](UI::EventParams &) {
@@ -930,6 +1025,13 @@ void SystemInfoScreen::CreateInternalsTab(UI::ViewGroup *internals) {
 	internals->Add(new ItemHeader(ac->T("Notifications")));
 	internals->Add(new PopupMultiChoice(&g_Config.iAchievementsLeaderboardTrackerPos, ac->T("Leaderboard tracker"), positions, 0, ARRAY_SIZE(positions), I18NCat::DIALOG, screenManager()))->SetEnabledPtr(&g_Config.bAchievementsEnable);
 
+#ifdef _DEBUG
+	// Untranslated string because this is debug mode only, only for PPSSPP developers.
+	internals->Add(new Choice("Assert"))->OnClick.Add([=](UI::EventParams &) {
+		_dbg_assert_msg_(false, "Test assert message");
+		return UI::EVENT_DONE;
+	});
+#endif
 #if PPSSPP_PLATFORM(ANDROID)
 	internals->Add(new Choice(si->T("Exception")))->OnClick.Add([&](UI::EventParams &) {
 		System_Notify(SystemNotification::TEST_JAVA_EXCEPTION);
@@ -970,7 +1072,7 @@ void ShaderListScreen::CreateViews() {
 	LinearLayout *layout = new LinearLayout(ORIENT_VERTICAL);
 	root_ = layout;
 
-	tabs_ = new TabHolder(ORIENT_HORIZONTAL, 40, new LinearLayoutParams(1.0));
+	tabs_ = new TabHolder(ORIENT_HORIZONTAL, 40, nullptr, new LinearLayoutParams(1.0));
 	tabs_->SetTag("DevShaderList");
 	layout->Add(tabs_);
 	layout->Add(new Button(di->T("Back")))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
@@ -1046,7 +1148,7 @@ void FrameDumpTestScreen::CreateViews() {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 
 	TabHolder *tabHolder;
-	tabHolder = new TabHolder(ORIENT_VERTICAL, 200, new AnchorLayoutParams(10, 0, 10, 0, false));
+	tabHolder = new TabHolder(ORIENT_VERTICAL, 200, nullptr, new AnchorLayoutParams(10, 0, 10, 0, false));
 	root_->Add(tabHolder);
 	AddStandardBack(root_);
 	tabHolder->SetTag("DumpTypes");
@@ -1070,12 +1172,12 @@ void FrameDumpTestScreen::CreateViews() {
 }
 
 UI::EventReturn FrameDumpTestScreen::OnLoadDump(UI::EventParams &params) {
-	std::string url = params.v->Tag();
+	Path url = Path(params.v->Tag());
 	INFO_LOG(Log::Common, "Trying to launch '%s'", url.c_str());
 	// Our disc streaming functionality detects the URL and takes over and handles loading framedumps well,
 	// except for some reason the game ID.
 	// TODO: Fix that since it can be important for compat settings.
-	LaunchFile(screenManager(), Path(url));
+	screenManager()->switchScreen(new EmuScreen(url));
 	return UI::EVENT_DONE;
 }
 
@@ -1084,7 +1186,7 @@ void FrameDumpTestScreen::update() {
 
 	if (!listing_) {
 		const char *acceptMime = "text/html, */*; q=0.8";
-		listing_ = g_DownloadManager.StartDownload(framedumpsBaseUrl, Path(), http::ProgressBarMode::DELAYED, acceptMime);
+		listing_ = g_DownloadManager.StartDownload(framedumpsBaseUrl, Path(), http::RequestFlags::ProgressBar | http::RequestFlags::ProgressBarDelayed, acceptMime);
 	}
 
 	if (listing_ && listing_->Done() && files_.empty()) {
@@ -1149,8 +1251,8 @@ void TouchTestScreen::touch(const TouchInput &touch) {
 				found = true;
 			}
 		}
-		if (!found) {
-			WARN_LOG(Log::System, "Move without touch down: %d", touch.id);
+		if (!found && touch.buttons) {
+			WARN_LOG(Log::System, "Move with buttons %d without touch down: %d", touch.buttons, touch.id);
 		}
 	}
 	if (touch.flags & TOUCH_UP) {
@@ -1183,14 +1285,13 @@ void TouchTestScreen::CreateViews() {
 	root_->Add(theTwo);
 
 #if !PPSSPP_PLATFORM(UWP)
-	static const char *renderingBackend[] = { "OpenGL", "Direct3D 9", "Direct3D 11", "Vulkan" };
+	static const char *renderingBackend[] = { "OpenGL", "(n/a)", "Direct3D 11", "Vulkan" };
 	PopupMultiChoice *renderingBackendChoice = root_->Add(new PopupMultiChoice(&g_Config.iGPUBackend, gr->T("Backend"), renderingBackend, (int)GPUBackend::OPENGL, ARRAY_SIZE(renderingBackend), I18NCat::GRAPHICS, screenManager()));
 	renderingBackendChoice->OnChoice.Handle(this, &TouchTestScreen::OnRenderingBackend);
 
 	if (!g_Config.IsBackendEnabled(GPUBackend::OPENGL))
 		renderingBackendChoice->HideChoice((int)GPUBackend::OPENGL);
-	if (!g_Config.IsBackendEnabled(GPUBackend::DIRECT3D9))
-		renderingBackendChoice->HideChoice((int)GPUBackend::DIRECT3D9);
+	renderingBackendChoice->HideChoice(1);   // previously D3D9
 	if (!g_Config.IsBackendEnabled(GPUBackend::DIRECT3D11))
 		renderingBackendChoice->HideChoice((int)GPUBackend::DIRECT3D11);
 	if (!g_Config.IsBackendEnabled(GPUBackend::VULKAN))
@@ -1233,6 +1334,11 @@ bool TouchTestScreen::key(const KeyInput &key) {
 }
 
 void TouchTestScreen::axis(const AxisInput &axis) {
+	if (axis.deviceId == DEVICE_ID_MOUSE && (axis.axisId == JOYSTICK_AXIS_MOUSE_REL_X || axis.axisId == JOYSTICK_AXIS_MOUSE_REL_Y)) {
+		// These spam a lot, don't log for now.
+		return;
+	}
+
 	char buf[512];
 	snprintf(buf, sizeof(buf), "Axis: %s (%d) (value %1.3f) Device ID: %d",
 		KeyMap::GetAxisName(axis.axisId).c_str(), axis.axisId, axis.value, axis.deviceId);
@@ -1277,18 +1383,14 @@ void TouchTestScreen::DrawForeground(UIContext &dc) {
 #endif
 
 	snprintf(buffer, sizeof(buffer),
-#if PPSSPP_PLATFORM(ANDROID)
 		"display_res: %dx%d\n"
-#endif
 		"dp_res: %dx%d pixel_res: %dx%d\n"
-		"g_dpi: %0.3f g_dpi_scale: %0.3fx%0.3f\n"
-		"g_dpi_scale_real: %0.3fx%0.3f\n"
+		"dpi_scale: %0.3fx%0.3f\n"
+		"dpi_scale_real: %0.3fx%0.3f\n"
 		"delta: %0.2f ms fps: %0.3f\n%s",
-#if PPSSPP_PLATFORM(ANDROID)
 		(int)System_GetPropertyInt(SYSPROP_DISPLAY_XRES), (int)System_GetPropertyInt(SYSPROP_DISPLAY_YRES),
-#endif
 		g_display.dp_xres, g_display.dp_yres, g_display.pixel_xres, g_display.pixel_yres,
-		g_display.dpi, g_display.dpi_scale_x, g_display.dpi_scale_y,
+		g_display.dpi_scale_x, g_display.dpi_scale_y,
 		g_display.dpi_scale_real_x, g_display.dpi_scale_real_y,
 		delta * 1000.0, 1.0 / delta,
 		extra_debug);

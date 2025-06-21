@@ -37,7 +37,6 @@
 #if PPSSPP_API(ANY_GL)
 #include "Windows/GPU/WindowsGLContext.h"
 #endif
-#include "Windows/GPU/D3D9Context.h"
 #include "Windows/GPU/D3D11Context.h"
 #include "Windows/GPU/WindowsVulkanContext.h"
 
@@ -91,16 +90,15 @@ bool WindowsHeadlessHost::InitGraphics(std::string *error_message, GraphicsConte
 		needRenderThread = true;
 		break;
 #endif
-	case GPUCORE_DIRECTX9:
-		graphicsContext = new D3D9Context();
-		break;
-
 	case GPUCORE_DIRECTX11:
 		graphicsContext = new D3D11Context();
 		break;
 
 	case GPUCORE_VULKAN:
 		graphicsContext = new WindowsVulkanContext();
+		break;
+	default:
+		_assert_(false);
 		break;
 	}
 
@@ -117,7 +115,7 @@ bool WindowsHeadlessHost::InitGraphics(std::string *error_message, GraphicsConte
 	if (needRenderThread) {
 		std::thread th([&]{
 			while (threadState_ == RenderThreadState::IDLE)
-				sleep_ms(1);
+				sleep_ms(1, "render-thread-idle-poll");
 			threadState_ = RenderThreadState::STARTING;
 
 			std::string err;
@@ -145,7 +143,7 @@ bool WindowsHeadlessHost::InitGraphics(std::string *error_message, GraphicsConte
 	if (needRenderThread) {
 		threadState_ = RenderThreadState::START_REQUESTED;
 		while (threadState_ == RenderThreadState::START_REQUESTED || threadState_ == RenderThreadState::STARTING)
-			sleep_ms(1);
+			sleep_ms(1, "render-thread-start-poll");
 
 		return threadState_ == RenderThreadState::STARTED;
 	}
@@ -156,7 +154,7 @@ bool WindowsHeadlessHost::InitGraphics(std::string *error_message, GraphicsConte
 void WindowsHeadlessHost::ShutdownGraphics() {
 	gfx_->StopThread();
 	while (threadState_ != RenderThreadState::STOPPED && threadState_ != RenderThreadState::IDLE)
-		sleep_ms(1);
+		sleep_ms(1, "render-thread-stop-poll");
 
 	gfx_->Shutdown();
 	delete gfx_;
@@ -165,11 +163,4 @@ void WindowsHeadlessHost::ShutdownGraphics() {
 	hWnd = NULL;
 }
 
-void WindowsHeadlessHost::SwapBuffers() {
-	if (gpuCore_ == GPUCORE_DIRECTX9) {
-		MSG msg;
-		PeekMessage(&msg, NULL, 0, 0, PM_REMOVE);
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
-	}
-}
+void WindowsHeadlessHost::SwapBuffers() {}

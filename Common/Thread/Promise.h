@@ -7,6 +7,22 @@
 #include "Common/Thread/Channel.h"
 #include "Common/Thread/ThreadManager.h"
 
+// Nobody needs to wait for this (except threadpool shutdown).
+template<class T>
+class IndependentTask : public Task {
+public:
+	IndependentTask(TaskType type, TaskPriority prio, T func) : func_(std::move(func)), type_(type), prio_(prio) {}
+	TaskType Type() const override { return type_; }
+	TaskPriority Priority() const override { return prio_; }
+	void Run() override {
+		func_();
+	}
+private:
+	T func_;
+	TaskType type_;
+	TaskPriority prio_;
+};
+
 template<class T>
 class PromiseTask : public Task {
 public:
@@ -28,13 +44,28 @@ public:
 
 	void Run() override {
 		T value = fun_();
-		tx_->Send(value);
+		if (!cancelled_) {
+			tx_->Send(value);
+		} else {
+			INFO_LOG(Log::System, "PromiseTask ended after cancellation");
+		}
+	}
+
+	bool Cancellable() const override {
+		return true;
+	}
+
+	void Cancel() override {
+		INFO_LOG(Log::System, "PromiseTask cancelled");
+		cancelled_ = true;
 	}
 
 	std::function<T ()> fun_;
 	Mailbox<T> *tx_;
 	const TaskType type_;
 	const TaskPriority priority_;
+
+	std::atomic<bool> cancelled_{};
 };
 
 // Represents pending or actual data.
@@ -54,6 +85,7 @@ public:
 
 		PromiseTask<T> *task = new PromiseTask<T>(fun, mailbox, taskType, taskPriority);
 		threadman->EnqueueTask(task);
+		promise->task_ = task;
 		return promise;
 	}
 
@@ -73,8 +105,8 @@ public:
 
 	// Allow an empty promise to spawn, too, in case we want to delay it.
 	void SpawnEmpty(ThreadManager *threadman, std::function<T()> fun, TaskType taskType, TaskPriority taskPriority = TaskPriority::NORMAL) {
-		PromiseTask<T> *task = new PromiseTask<T>(fun, rx_, taskType, taskPriority);
-		threadman->EnqueueTask(task);
+		task_ = new PromiseTask<T>(fun, rx_, taskType, taskPriority);
+		threadman->EnqueueTask(task_);
 	}
 
 	~Promise() {
@@ -94,10 +126,12 @@ public:
 		if (ready_) {
 			return data_;
 		} else {
+			_dbg_assert_(rx_);
 			if (rx_->Poll(&data_)) {
 				rx_->Release();
 				rx_ = nullptr;
 				ready_ = true;
+				task_ = nullptr;
 				return data_;
 			} else {
 				return nullptr;
@@ -112,10 +146,12 @@ public:
 		if (ready_) {
 			return data_;
 		} else {
+			_dbg_assert_(rx_);
 			data_ = rx_->Wait();
 			rx_->Release();
 			rx_ = nullptr;
 			ready_ = true;
+			task_ = nullptr;
 			return data_;
 		}
 	}
@@ -123,6 +159,19 @@ public:
 	// For outside injection of data, when not using Spawn.
 	void Post(T data) {
 		rx_->Send(data);
+	}
+
+	void Cancel() {
+		std::lock_guard<std::mutex> guard(readyMutex_);
+		if (!ready_) {
+			ready_ = true;
+			_dbg_assert_(task_);
+			if (task_) {
+				task_->Cancel();
+			}
+			rx_->Release();
+			rx_ = nullptr;
+		}
 	}
 
 private:
@@ -134,4 +183,5 @@ private:
 	std::mutex readyMutex_;
 	Mailbox<T> *rx_ = nullptr;
 	uint32_t sentinel_ = 0xffc0ffee;
+	PromiseTask<T> *task_ = nullptr;
 };

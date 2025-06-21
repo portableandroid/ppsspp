@@ -237,11 +237,7 @@ void VR_InitRenderer( engine_t* engine ) {
 		projections[eye].type = XR_TYPE_VIEW;
 	}
 
-	void* vulkanContext = nullptr;
-	if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
-		vulkanContext = &engine->graphicsBindingVulkan;
-	}
-	ovrRenderer_Create(engine->appState.Session, &engine->appState.Renderer, eyeW, eyeH, vulkanContext);
+	ovrRenderer_Create(engine->appState.Session, &engine->appState.Renderer, eyeW, eyeH);
 
 	if (VR_GetPlatformFlag(VRPlatformFlag::VR_PLATFORM_EXTENSION_PASSTHROUGH)) {
 		XrPassthroughCreateInfoFB ptci = {XR_TYPE_PASSTHROUGH_CREATE_INFO_FB};
@@ -298,16 +294,10 @@ bool VR_InitFrame( engine_t* engine ) {
 		passthroughRunning = (VR_GetConfig(VR_CONFIG_PASSTHROUGH) != 0);
 	}
 
-	// NOTE: OpenXR does not use the concept of frame indices. Instead,
-	// XrWaitFrame returns the predicted display time.
-	XrFrameWaitInfo waitFrameInfo = {};
-	waitFrameInfo.type = XR_TYPE_FRAME_WAIT_INFO;
-	waitFrameInfo.next = NULL;
-
 	frameState.type = XR_TYPE_FRAME_STATE;
 	frameState.next = NULL;
 
-	OXR(xrWaitFrame(engine->appState.Session, &waitFrameInfo, &frameState));
+	OXR(xrWaitFrame(engine->appState.Session, 0, &frameState));
 	engine->predictedDisplayTime = frameState.predictedDisplayTime;
 
 	XrViewLocateInfo projectionInfo = {};
@@ -381,6 +371,16 @@ void VR_EndFrame( engine_t* engine ) {
 }
 
 void VR_FinishFrame( engine_t* engine ) {
+	if (VR_GetPlatformFlag(VRPlatformFlag::VR_PLATFORM_EXTENSION_PASSTHROUGH) && VR_GetConfig(VR_CONFIG_PASSTHROUGH)) {
+		if (passthroughLayer != XR_NULL_HANDLE) {
+			XrCompositionLayerPassthroughFB passthrough_layer = {XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
+			passthrough_layer.layerHandle = passthroughLayer;
+			passthrough_layer.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+			passthrough_layer.space = XR_NULL_HANDLE;
+			engine->appState.Layers[engine->appState.LayerCount++].Passthrough = passthrough_layer;
+		}
+	}
+
 	int vrMode = vrConfig[VR_CONFIG_MODE];
 	XrCompositionLayerProjectionView projection_layer_elements[2] = {};
 	bool headTracking = (vrMode == VR_MODE_MONO_6DOF) || (vrMode == VR_MODE_SBS_6DOF) || (vrMode == VR_MODE_STEREO_6DOF);

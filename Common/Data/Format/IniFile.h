@@ -18,7 +18,8 @@ class VFSInterface;
 
 class ParsedIniLine {
 public:
-	ParsedIniLine() {}
+	explicit ParsedIniLine(std::string_view line);
+
 	ParsedIniLine(std::string_view key, std::string_view value) {
 		this->key = key;
 		this->value = value;
@@ -32,8 +33,6 @@ public:
 		return ParsedIniLine(std::string_view(), std::string_view(), comment);
 	}
 
-	// Comments only come from "ParseFrom".
-	void ParseFrom(std::string_view line);
 	void Reconstruct(std::string *output) const;
 
 	// Having these as views allows a more efficient internal representation, like one joint string.
@@ -114,6 +113,11 @@ public:
 
 	const std::string &name() const {
 		return name_;
+	}
+
+	// For reading without copying. Note: You may have to ignore lines with empty keys.
+	const std::vector<ParsedIniLine> &Lines() const {
+		return lines_;
 	}
 
 protected:

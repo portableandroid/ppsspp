@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Common/Math/lin/matrix4x4.h"
+#include "Common/GPU/MiscTypes.h"
 
 // This is meant to be a framework for handling DPI scaling etc.
 // For now, it just consists of these ugly globals.
@@ -15,20 +16,22 @@ enum class DisplayRotation {
 };
 
 struct DisplayProperties {
-	int dp_xres;
-	int dp_yres;
+	// Display resolution in true pixels.
 	int pixel_xres;
 	int pixel_yres;
 
-	float dpi = 1.0f;  // will be overwritten with a value that makes sense.
+	// Display resolution in virtual ("display") pixels
+	int dp_xres;
+	int dp_yres;
+
 	float dpi_scale_x = 1.0f;
 	float dpi_scale_y = 1.0f;
 
-	// pixel_xres/yres in dps
+	// Size of a physical pixel in dps
 	float pixel_in_dps_x = 1.0f;
 	float pixel_in_dps_y = 1.0f;
 
-	// If DPI is overridden (like in small window mode), these are still the original DPI.
+	// If DPI is overridden (like in small window mode), this is still the original DPI scale factor.
 	float dpi_scale_real_x = 1.0f;
 	float dpi_scale_real_y = 1.0f;
 
@@ -39,6 +42,10 @@ struct DisplayProperties {
 
 	DisplayProperties();
 	void Print();
+
+	// Returns true if the dimensions changed.
+	// The first three parameters can take -1 to signify "unchanged".
+	bool Recalculate(int new_pixel_xres, int new_pixel_yres, float new_scale_x, float new_scale_y, float customScale);
 };
 
 extern DisplayProperties g_display;
@@ -50,3 +57,5 @@ struct DisplayRect {
 
 void RotateRectToDisplay(DisplayRect<float> &rect, float rtWidth, float rtHeight);
 void RotateRectToDisplay(DisplayRect<int> &rect, int rtWidth, int rtHeight);
+
+Lin::Matrix4x4 ComputeOrthoMatrix(float xres, float yres, CoordConvention coordConvention);

@@ -25,7 +25,7 @@
 #include "Core/MIPS/x86/X64IRRegCache.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/MIPS/JitCommon/JitState.h"
-#include "Core/System.h"
+#include "Core/Core.h"
 
 namespace MIPSComp {
 
@@ -303,7 +303,7 @@ void X64JitBackend::GenerateFixedCode(MIPSState *mipsState) {
 	if (enableDisasm) {
 #if PPSSPP_ARCH(AMD64)
 		std::vector<std::string> lines = DisassembleX86(disasmStart, (int)(GetCodePtr() - disasmStart));
-		for (auto s : lines) {
+		for (const auto &s : lines) {
 			INFO_LOG(Log::JIT, "%s", s.c_str());
 		}
 #endif

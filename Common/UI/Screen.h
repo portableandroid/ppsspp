@@ -81,7 +81,7 @@ public:
 	virtual void dialogFinished(const Screen *dialog, DialogResult result) {}
 	virtual void sendMessage(UIMessage message, const char *value) {}
 	virtual void deviceLost() {}
-	virtual void deviceRestored() {}
+	virtual void deviceRestored(Draw::DrawContext *draw) {}
 	virtual ScreenRenderRole renderRole(bool isTop) const { return ScreenRenderRole::NONE; }
 	virtual bool wantBrightBackground() const { return false; }  // special hack for DisplayLayoutScreen.
 
@@ -108,6 +108,9 @@ public:
 
 protected:
 	int GetRequesterToken();
+	void WipeRequesterToken() {
+		token_ = -1;
+	}
 
 private:
 	ScreenManager *screenManager_;
@@ -136,9 +139,7 @@ public:
 
 	void setUIContext(UIContext *context) { uiContext_ = context; }
 	UIContext *getUIContext() { return uiContext_; }
-
-	void setDrawContext(Draw::DrawContext *context) { thin3DContext_ = context; }
-	Draw::DrawContext *getDrawContext() { return thin3DContext_; }
+	Draw::DrawContext *getDrawContext() { return draw_; }
 
 	void setPostRenderCallback(PostRenderCallback cb, void *userdata) {
 		postRenderCb_ = cb;
@@ -150,7 +151,7 @@ public:
 	void shutdown();
 
 	void deviceLost();
-	void deviceRestored();
+	void deviceRestored(Draw::DrawContext *draw);
 
 	// Push a dialog box in front. Currently 1-level only.
 	void push(Screen *screen, int layerFlags = 0);
@@ -167,7 +168,6 @@ public:
 	bool key(const KeyInput &key);
 	void axis(const AxisInput *axes, size_t count);
 
-	// Generic facility for gross hacks :P
 	void sendMessage(UIMessage message, const char *value);
 
 	const Screen *topScreen() const {
@@ -176,6 +176,8 @@ public:
 	Screen *topScreen() {
 		return stack_.empty() ? nullptr : stack_.back().screen;
 	}
+
+	void cancelScreensAbove(Screen *screen);
 
 	void getFocusPosition(float &x, float &y, float &z);
 
@@ -190,7 +192,7 @@ private:
 	void processFinishDialog();
 
 	UIContext *uiContext_ = nullptr;
-	Draw::DrawContext *thin3DContext_ = nullptr;
+	Draw::DrawContext *draw_ = nullptr;
 
 	PostRenderCallback postRenderCb_ = nullptr;
 	void *postRenderUserdata_ = nullptr;
@@ -200,6 +202,8 @@ private:
 
 	Screen *backgroundScreen_ = nullptr;
 	Screen *overlayScreen_ = nullptr;
+
+	Screen *cancelScreensAbove_ = nullptr;
 
 	struct Layer {
 		Screen *screen;

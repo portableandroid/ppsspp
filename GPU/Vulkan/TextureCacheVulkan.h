@@ -18,7 +18,7 @@
 #pragma once
 
 #include "Common/Data/Collections/Hashmaps.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
 #include "Common/GPU/Vulkan/VulkanContext.h"
 #include "GPU/Common/TextureCacheCommon.h"
@@ -78,10 +78,10 @@ public:
 
 	void GetStats(char *ptr, size_t size);
 
-	VulkanDeviceAllocator *GetAllocator() { return allocator_; }
-
 	std::vector<std::string> DebugGetSamplerIDs() const;
 	std::string DebugGetSamplerString(const std::string &id, DebugShaderStringType stringType);
+
+	void *GetNativeTextureView(const TexCacheEntry *entry, bool flat) const override;
 
 protected:
 	void BindTexture(TexCacheEntry *entry) override;
@@ -90,7 +90,6 @@ protected:
 	void BindAsClutTexture(Draw::Texture *tex, bool smooth) override;
 	void ApplySamplingParams(const SamplerCacheKey &key) override;
 	void BoundFramebufferTexture() override;
-	void *GetNativeTextureView(const TexCacheEntry *entry) override;
 
 private:
 	void LoadVulkanTextureLevel(TexCacheEntry &entry, uint8_t *writePtr, int rowPitch,  int level, int scaleFactor, VkFormat dstFmt);
@@ -100,8 +99,6 @@ private:
 	void BuildTexture(TexCacheEntry *const entry) override;
 
 	void CompileScalingShader();
-
-	VulkanDeviceAllocator *allocator_ = nullptr;
 
 	VulkanComputeShaderManager computeShaderManager_;
 

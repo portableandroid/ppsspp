@@ -20,7 +20,6 @@
 #include <mutex>
 #include <utility>
 
-#include "Common/Math/math_util.h"
 
 #include "Common/CommonTypes.h"
 #include "Common/Serialize/Serializer.h"
@@ -33,6 +32,7 @@
 #include "Core/MIPS/MIPSVFPUUtils.h"
 #include "Core/MIPS/IR/IRJit.h"
 #include "Core/Reporting.h"
+#include "Core/Core.h"
 #include "Core/System.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/CoreTiming.h"
@@ -228,39 +228,39 @@ void MIPSState::UpdateCore(CPUCore desired) {
 		return;
 	}
 
-	PSP_CoreParameter().cpuCore = desired;
-	MIPSComp::JitInterface *oldjit = MIPSComp::jit;
-	MIPSComp::JitInterface *newjit = nullptr;
+	IncrementDebugCounter(DebugCounter::CPUCORE_SWITCHES);
 
+	// Get rid of the old JIT first, before switching.
+	{
+		std::lock_guard<std::recursive_mutex> guard(MIPSComp::jitLock);
+		if (MIPSComp::jit) {
+			delete MIPSComp::jit;
+			MIPSComp::jit = nullptr;
+		}
+	}
+
+	PSP_CoreParameter().cpuCore = desired;
+
+	MIPSComp::JitInterface *newjit = nullptr;
 	switch (PSP_CoreParameter().cpuCore) {
 	case CPUCore::JIT:
 	case CPUCore::JIT_IR:
 		INFO_LOG(Log::CPU, "Switching to JIT%s", PSP_CoreParameter().cpuCore == CPUCore::JIT_IR ? " IR" : "");
-		if (oldjit) {
-			std::lock_guard<std::recursive_mutex> guard(MIPSComp::jitLock);
-			MIPSComp::jit = nullptr;
-			delete oldjit;
-		}
 		newjit = MIPSComp::CreateNativeJit(this, PSP_CoreParameter().cpuCore == CPUCore::JIT_IR);
 		break;
 
 	case CPUCore::IR_INTERPRETER:
 		INFO_LOG(Log::CPU, "Switching to IR interpreter");
-		if (oldjit) {
-			std::lock_guard<std::recursive_mutex> guard(MIPSComp::jitLock);
-			MIPSComp::jit = nullptr;
-			delete oldjit;
-		}
 		newjit = new MIPSComp::IRJit(this, false);
 		break;
 
 	case CPUCore::INTERPRETER:
 		INFO_LOG(Log::CPU, "Switching to interpreter");
-		if (oldjit) {
-			std::lock_guard<std::recursive_mutex> guard(MIPSComp::jitLock);
-			MIPSComp::jit = nullptr;
-			delete oldjit;
-		}
+		// Leaving newjit as null.
+		break;
+
+	default:
+		WARN_LOG(Log::CPU, "Invalid value for cpuCore, falling back to interpreter");
 		break;
 	}
 
@@ -336,6 +336,7 @@ int MIPSState::RunLoopUntil(u64 globalTicks) {
 	case CPUCore::IR_INTERPRETER:
 		while (inDelaySlot) {
 			// We must get out of the delay slot before going into jit.
+			// This normally should never take more than one step...
 			SingleStep();
 		}
 		insideJit = true;
@@ -378,7 +379,7 @@ void MIPSState::InvalidateICache(u32 address, int length) {
 void MIPSState::ClearJitCache() {
 	std::lock_guard<std::recursive_mutex> guard(MIPSComp::jitLock);
 	if (MIPSComp::jit) {
-		if (coreState == CORE_RUNNING || insideJit) {
+		if (coreState == CORE_RUNNING_CPU || insideJit) {
 			pendingClears.emplace_back(0, 0);
 			hasPendingClears = true;
 			CoreTiming::ForceCheck();

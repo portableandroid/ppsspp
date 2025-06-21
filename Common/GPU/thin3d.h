@@ -172,7 +172,7 @@ enum class CullMode : uint8_t {
 	NONE,
 	FRONT,
 	BACK,
-	FRONT_AND_BACK,  // Not supported on D3D9
+	FRONT_AND_BACK,
 };
 
 enum class Facing {
@@ -258,16 +258,17 @@ enum class NativeObject {
 	PUSH_POOL,
 };
 
-enum FBChannel {
-	FB_COLOR_BIT = 1,
-	FB_DEPTH_BIT = 2,
-	FB_STENCIL_BIT = 4,
+enum class Aspect {
+	NO_BIT = 0,
+	COLOR_BIT = 1,
+	DEPTH_BIT = 2,
+	STENCIL_BIT = 4,
 
 	// Implementation specific
-	FB_SURFACE_BIT = 32,  // Used in conjunction with the others in D3D9 to get surfaces through get_api_texture
-	FB_VIEW_BIT = 64,     // Used in conjunction with the others in D3D11 to get shader resource views through get_api_texture
-	FB_FORMAT_BIT = 128,  // Actually retrieves the native format instead. D3D11 only.
+	VIEW_BIT = 64,     // Used in conjunction with the others in D3D11 to get shader resource views through get_api_texture
+	FORMAT_BIT = 128,  // Actually retrieves the native format instead. D3D11 only.
 };
+ENUM_CLASS_BITOPS(Aspect);
 
 enum FBInvalidationStage {
 	FB_INVALIDATION_LOAD = 1,
@@ -457,6 +458,8 @@ public:
 	int MultiSampleLevel() const { return multiSampleLevel_; }
 
 	virtual void UpdateTag(const char *tag) {}
+	virtual const char *Tag() const { return "(no name)"; }
+
 protected:
 	int width_ = -1, height_ = -1, layers_ = 1, multiSampleLevel_ = 0;
 };
@@ -473,6 +476,10 @@ public:
 	int Height() const { return height_; }
 	int Depth() const { return depth_; }
 	DataFormat Format() const { return format_; }
+	int DataSize() const {
+		// Rough estimate, discounts padding etc.
+		return width_ * height_ * (int)DataFormatSizeInBytes(format_);
+	}
 
 protected:
 	int width_ = -1, height_ = -1, depth_ = -1;
@@ -581,6 +588,7 @@ struct DeviceCaps {
 	GPUVendor vendor;
 	uint32_t deviceID;  // use caution!
 
+	CoordConvention coordConvention;
 	DataFormat preferredDepthBufferFormat;
 	DataFormat preferredShadowMapFormatLow;
 	DataFormat preferredShadowMapFormatHigh;
@@ -616,9 +624,6 @@ struct DeviceCaps {
 	bool provokingVertexLast;  // GL behavior, what the PSP does
 	bool verySlowShaderCompiler;
 
-	// From the other backends, we can detect if D3D9 support is known bad (like on Xe) and disable it.
-	bool supportsD3D9;
-
 	// Old style, for older GL or Direct3D 9.
 	u32 clipPlanesSupported;
 
@@ -638,6 +643,7 @@ typedef std::function<bool(uint8_t *data, const uint8_t *initData, uint32_t w, u
 enum class TextureSwizzle {
 	DEFAULT,
 	R8_AS_ALPHA,
+	R8_AS_GRAYSCALE,
 };
 
 struct TextureDesc {
@@ -691,6 +697,21 @@ ENUM_CLASS_BITOPS(DebugFlags);
 struct BackendState {
 	u32 passes;
 	bool valid;
+};
+
+struct ClippedDraw {
+	int indexOffset;
+	int indexCount;
+	s16 clipx;
+	s16 clipy;
+	s16 clipw;
+	s16 cliph;
+	Draw::Texture *bindTexture;
+	Draw::Framebuffer *bindFramebufferAsTex;
+	void *bindNativeTexture;
+	Draw::SamplerState *samplerState;
+	Draw::Pipeline *pipeline;
+	Draw::Aspect aspect;
 };
 
 class DrawContext {
@@ -755,11 +776,11 @@ public:
 	// while in Vulkan this might cause various strangeness like image corruption.
 	virtual void UpdateTextureLevels(Texture *texture, const uint8_t **data, TextureCallback initDataCallback, int numLevels) = 0;
 
-	virtual void CopyFramebufferImage(Framebuffer *src, int level, int x, int y, int z, Framebuffer *dst, int dstLevel, int dstX, int dstY, int dstZ, int width, int height, int depth, int channelBits, const char *tag) = 0;
-	virtual bool BlitFramebuffer(Framebuffer *src, int srcX1, int srcY1, int srcX2, int srcY2, Framebuffer *dst, int dstX1, int dstY1, int dstX2, int dstY2, int channelBits, FBBlitFilter filter, const char *tag) = 0;
+	virtual void CopyFramebufferImage(Framebuffer *src, int level, int x, int y, int z, Framebuffer *dst, int dstLevel, int dstX, int dstY, int dstZ, int width, int height, int depth, Aspect aspects, const char *tag) = 0;
+	virtual bool BlitFramebuffer(Framebuffer *src, int srcX1, int srcY1, int srcX2, int srcY2, Framebuffer *dst, int dstX1, int dstY1, int dstX2, int dstY2, Aspect aspects, FBBlitFilter filter, const char *tag) = 0;
 
 	// If the backend doesn't support old data, it's "OK" to block.
-	virtual bool CopyFramebufferToMemory(Framebuffer *src, int channelBits, int x, int y, int w, int h, Draw::DataFormat format, void *pixels, int pixelStride, ReadbackMode mode, const char *tag) {
+	virtual bool CopyFramebufferToMemory(Framebuffer *src, Aspect aspect, int x, int y, int w, int h, Draw::DataFormat format, void *pixels, int pixelStride, ReadbackMode mode, const char *tag) {
 		return false;
 	}
 	virtual DataFormat PreferredFramebufferReadbackFormat(Framebuffer *src) {
@@ -772,23 +793,18 @@ public:
 	virtual void BindFramebufferAsRenderTarget(Framebuffer *fbo, const RenderPassInfo &rp, const char *tag) = 0;
 
 	// binding must be < MAX_TEXTURE_SLOTS (0, 1 are okay if it's 2).
-	virtual void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int layer) = 0;
+	virtual void BindFramebufferAsTexture(Framebuffer *fbo, int binding, Aspect aspect, int layer) = 0;
 
 	// Framebuffer fetch / input attachment support, needs to be explicit in Vulkan.
 	virtual void BindCurrentFramebufferForColorInput() {}
-
-	// deprecated, only used by D3D9
-	virtual uintptr_t GetFramebufferAPITexture(Framebuffer *fbo, int channelBits, int attachment) {
-		return 0;
-	}
 
 	virtual void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) = 0;
 
 	// Could be useful in OpenGL ES to give hints about framebuffers on tiler GPUs
 	// using glInvalidateFramebuffer, although drivers are known to botch that so we currently don't use it.
 	// In Vulkan, this sets the LOAD_OP or the STORE_OP (depending on stage) of the current render pass instance to DONT_CARE.
-	// channels is a bitwise combination of FBChannel::COLOR, DEPTH and STENCIL.
-	virtual void InvalidateFramebuffer(FBInvalidationStage stage, uint32_t channels) {}
+	// channels is a bitwise combination of Aspect::COLOR, DEPTH and STENCIL.
+	virtual void InvalidateFramebuffer(FBInvalidationStage stage, Aspect aspects) {}
 
 	// Dynamic state
 	virtual void SetScissorRect(int left, int top, int width, int height) = 0;
@@ -806,6 +822,7 @@ public:
 	// Data types:
 	// * Vulkan: VkImageView
 	// * D3D11: ID3D11ShaderResourceView*
+	// * OpenGL: GLRTexture
 	virtual void BindNativeTexture(int sampler, void *nativeTexture) = 0;
 
 	// Only supports a single dynamic uniform buffer, for maximum compatibility with the old APIs and ease of emulation.
@@ -827,7 +844,10 @@ public:
 	virtual void Draw(int vertexCount, int offset) = 0;
 	virtual void DrawIndexed(int vertexCount, int offset) = 0;  // Always 16-bit indices.
 	virtual void DrawUP(const void *vdata, int vertexCount) = 0;
-	
+	virtual void DrawIndexedUP(const void *vdata, int vertexCount, const void *idata, int indexCount) = 0;
+	// Intended for ImGui display lists, easier to do optimally this way.
+	virtual void DrawIndexedClippedBatchUP(const void *vdata, int vertexCount, const void *idata, int indexCount, Slice<ClippedDraw> draws, const void *dynUniforms, size_t size) = 0;
+
 	// Frame management (for the purposes of sync and resource management, necessary with modern APIs). Default implementations here.
 	virtual void BeginFrame(DebugFlags debugFlags) = 0;
 	virtual void EndFrame() = 0;
@@ -838,7 +858,7 @@ public:
 
 	// This should be avoided as much as possible, in favor of clearing when binding a render target, which is native
 	// on Vulkan.
-	virtual void Clear(int mask, uint32_t colorval, float depthVal, int stencilVal) = 0;
+	virtual void Clear(Aspect aspects, uint32_t colorval, float depthVal, int stencilVal) = 0;
 
 	// Necessary to correctly flip scissor rectangles etc for OpenGL.
 	virtual void SetTargetSize(int w, int h) {

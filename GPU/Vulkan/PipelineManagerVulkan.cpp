@@ -8,11 +8,8 @@
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
 #include "Common/GPU/Vulkan/VulkanContext.h"
-#include "Core/Config.h"
-#include "GPU/Vulkan/VulkanUtil.h"
 #include "GPU/Vulkan/PipelineManagerVulkan.h"
 #include "GPU/Vulkan/ShaderManagerVulkan.h"
-#include "GPU/Common/DrawEngineCommon.h"
 #include "GPU/Common/ShaderId.h"
 #include "Common/GPU/thin3d.h"
 #include "Common/GPU/Vulkan/VulkanRenderManager.h"
@@ -836,7 +833,6 @@ bool PipelineManagerVulkan::LoadPipelineCache(FILE *file, bool loadRawPipelineCa
 
 	rm->NudgeCompilerThread();
 
-	NOTICE_LOG(Log::G3D, "Recreated Vulkan pipeline cache (%d pipelines, %d failed).", (int)size, pipelineCreateFailCount);
-	// We just ignore any failures.
+	// The rest of the work is async, we can't know here if it'll succeed.
 	return true;
 }

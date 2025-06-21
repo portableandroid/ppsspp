@@ -248,7 +248,16 @@ u8* GetPointerWrite(const u32 address);
 const u8* GetPointer(const u32 address);
 
 u8 *GetPointerWriteRange(const u32 address, const u32 size);
+template<typename T>
+T* GetTypedPointerWriteRange(const u32 address, const u32 size) {
+	return reinterpret_cast<T*>(GetPointerWriteRange(address, size));
+}
+
 const u8 *GetPointerRange(const u32 address, const u32 size);
+template<typename T>
+const T* GetTypedPointerRange(const u32 address, const u32 size) {
+	return reinterpret_cast<const T*>(GetPointerRange(address, size));
+}
 
 bool IsRAMAddress(const u32 address);
 inline bool IsVRAMAddress(const u32 address) {
@@ -286,7 +295,7 @@ inline bool IsValidAddress(const u32 address) {
 	if ((address & 0x3E000000) == 0x08000000) {
 		return true;
 	} else if ((address & 0x3F800000) == 0x04000000) {
-		return true;
+		return address < 0x80000000;  // Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
 	} else if ((address & 0xBFFFC000) == 0x00010000) {
 		return true;
 	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
@@ -300,7 +309,7 @@ inline bool IsValid4AlignedAddress(const u32 address) {
 	if ((address & 0x3E000003) == 0x08000000) {
 		return true;
 	} else if ((address & 0x3F800003) == 0x04000000) {
-		return true;
+		return address < 0x80000000;  // Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
 	} else if ((address & 0xBFFFC003) == 0x00010000) {
 		return true;
 	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
@@ -310,12 +319,15 @@ inline bool IsValid4AlignedAddress(const u32 address) {
 	}
 }
 
-
 inline u32 MaxSizeAtAddress(const u32 address){
 	if ((address & 0x3E000000) == 0x08000000) {
 		return 0x08000000 + g_MemorySize - (address & 0x3FFFFFFF);
 	} else if ((address & 0x3F800000) == 0x04000000) {
-		return 0x04800000 - (address & 0x3FFFFFFF);
+		if (address & 0x80000000) {
+			return 0;
+		} else {
+			return 0x04800000 - (address & 0x3FFFFFFF);
+		}
 	} else if ((address & 0xBFFFC000) == 0x00010000) {
 		return 0x00014000 - (address & 0x3FFFFFFF);
 	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
@@ -357,6 +369,15 @@ inline bool IsValidRange(const u32 address, const u32 size) {
 	return ValidSize(address, size) == size;
 }
 
+// NOTE: If size == 0, any address will be accepted. This may not be ideal for all cases.
+// Also, length is not checked for alignment.
+inline bool IsValid4AlignedRange(const u32 address, const u32 size) {
+	if (address & 3) {
+		return false;
+	}
+	return ValidSize(address, size) == size;
+}
+
 // Used for auto-converted char * parameters, which can sometimes legitimately be null -
 // so we don't want to get caught in GetPointer's crash reporting
 // TODO: This should use IsValidNullTerminatedString, but may be expensive since this is used so much - needs evaluation.
@@ -368,11 +389,35 @@ inline const char *GetCharPointer(const u32 address) {
 	}
 }
 
+// Remaps the host pointer (potentially 64bit) into the 32bit virtual pointer, no checks are made
+inline u32 GetAddressFromHostPointerUnchecked(const void* host_ptr) {
+	auto address = static_cast<const u8*>(host_ptr) - base;
+	return static_cast<u32>(address);
+}
+
+// Remaps the host pointer (potentially 64bit) into the 32bit virtual pointer with checks
+inline u32 GetAddressFromHostPointer(const void* host_ptr) {
+	u32 address = GetAddressFromHostPointerUnchecked(host_ptr);
+	if (!IsValidAddress(address)) {
+		// Somehow report the error?
+		return 0;
+	}
+	return address;
+}
+
+// Like GetPointer, but bad values don't result in a memory exception, instead nullptr is returned.
+inline const u8* GetPointerOrNull(const u32 address) {
+	return IsValidAddress(address) ? GetPointerUnchecked(address) : nullptr;
+}
+
 }  // namespace Memory
 
 // Avoiding a global include for NotifyMemInfo.
 void PSPPointerNotifyRW(int rw, uint32_t ptr, uint32_t bytes, const char *tag, size_t tagLen);
 
+// TODO: These are actually quite annoying because they can't be followed in the MSVC debugger...
+// Need to find a solution for that. Can't just change the internal representation though, because
+// these can be present in PSP-native structs.
 template <typename T>
 struct PSPPointer
 {
@@ -387,7 +432,16 @@ struct PSPPointer
 #endif
 	}
 
-	inline T &operator[](int i) const
+	inline const T &operator[](int i) const
+	{
+#ifdef MASKED_PSP_MEMORY
+		return *((T *)(Memory::base + (ptr & Memory::MEMVIEW32_MASK)) + i);
+#else
+		return *((const T *)(Memory::base + ptr) + i);
+#endif
+	}
+
+	inline T &operator[](int i)
 	{
 #ifdef MASKED_PSP_MEMORY
 		return *((T *)(Memory::base + (ptr & Memory::MEMVIEW32_MASK)) + i);
@@ -396,7 +450,16 @@ struct PSPPointer
 #endif
 	}
 
-	inline T *operator->() const
+	inline const T *operator->() const
+	{
+#ifdef MASKED_PSP_MEMORY
+		return (T *)(Memory::base + (ptr & Memory::MEMVIEW32_MASK));
+#else
+		return (const T *)(Memory::base + ptr);
+#endif
+	}
+
+	inline T *operator->()
 	{
 #ifdef MASKED_PSP_MEMORY
 		return (T *)(Memory::base + (ptr & Memory::MEMVIEW32_MASK));
@@ -485,6 +548,14 @@ struct PSPPointer
 
 	bool IsValid() const {
 		return Memory::IsValidRange(ptr, (u32)sizeof(T));
+	}
+
+	void FillWithZero() {
+		memset(Memory::GetPointerWrite(ptr), 0, sizeof(T));
+	}
+
+	bool Equals(u32 addr) const {
+		return ptr == addr;
 	}
 
 	T *PtrOrNull() {

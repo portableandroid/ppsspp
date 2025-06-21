@@ -4,6 +4,7 @@
 #include "Common/StringUtils.h"
 #include "Common/Log.h"
 #include "Common/TimeUtil.h"
+#include "Common/System/System.h"
 
 #include "android/jni/app-android.h"
 #include "Common/Thread/ThreadUtil.h"
@@ -222,17 +223,17 @@ bool Android_FileExists(const std::string &fileUri) {
 	return exists;
 }
 
-std::vector<File::FileInfo> Android_ListContentUri(const std::string &path, bool *exists) {
+std::vector<File::FileInfo> Android_ListContentUri(const std::string &uri, const std::string &prefix, bool *exists) {
 	if (!g_nativeActivity) {
 		*exists = false;
-		return std::vector<File::FileInfo>();
+		return {};
 	}
 	auto env = getEnv();
 	*exists = true;
 
 	double start = time_now_d();
 
-	jstring param = env->NewStringUTF(path.c_str());
+	jstring param = env->NewStringUTF(uri.c_str());
 	jobject retval = env->CallObjectMethod(g_nativeActivity, listContentUriDir, param);
 
 	jobjectArray fileList = (jobjectArray)retval;
@@ -245,11 +246,12 @@ std::vector<File::FileInfo> Android_ListContentUri(const std::string &path, bool
 			std::string line = charArray;
 			File::FileInfo info{};
 			if (line == "X") {
-				// Indicates an exception thrown, path doesn't exist.
+				// Indicates an exception thrown, uri doesn't exist.
 				*exists = false;
 			} else if (ParseFileInfo(line, &info)) {
 				// We can just reconstruct the URI.
-				info.fullName = Path(path) / info.name;
+				info.fullName = Path(uri) / info.name;
+				// INFO_LOG(Log::IO, "%s", info.name.c_str());
 				items.push_back(info);
 			}
 		}
@@ -261,7 +263,7 @@ std::vector<File::FileInfo> Android_ListContentUri(const std::string &path, bool
 	double elapsed = time_now_d() - start;
 	double threshold = 0.1;
 	if (elapsed >= threshold) {
-		INFO_LOG(Log::FileSystem, "Listing directory on content URI '%s' took %0.3f s (%d files, log threshold = %0.3f)", path.c_str(), elapsed, (int)items.size(), threshold);
+		INFO_LOG(Log::IO, "Listing directory on content URI '%s' took %0.3f s (%d files, log threshold = %0.3f)", uri.c_str(), elapsed, (int)items.size(), threshold);
 	}
 	return items;
 }
@@ -276,11 +278,17 @@ int64_t Android_GetFreeSpaceByContentUri(const std::string &uri) {
 	return env->CallLongMethod(g_nativeActivity, contentUriGetFreeStorageSpace, param);
 }
 
+// Hm, this is never used? We use statvfs instead.
 int64_t Android_GetFreeSpaceByFilePath(const std::string &filePath) {
 	if (!g_nativeActivity) {
 		return false;
 	}
 	auto env = getEnv();
+
+	if (System_GetPropertyInt(SYSPROP_SYSTEMVERSION) < 26) {
+		// This is available from Android O.
+		return -1;
+	}
 
 	jstring param = env->NewStringUTF(filePath.c_str());
 	return env->CallLongMethod(g_nativeActivity, filePathGetFreeStorageSpace, param);

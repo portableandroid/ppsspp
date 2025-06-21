@@ -4,24 +4,20 @@ SRC := ../..
 include $(CLEAR_VARS)
 include $(LOCAL_PATH)/Locals.mk
 
-LOCAL_CFLAGS += -D_7ZIP_ST -D__SWITCH__
+LOCAL_CFLAGS += -DZ7_ST -D__SWITCH__
 
 LZMA_FILES := \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Alloc.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Bcj2.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Bcj2Enc.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Bra.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Bra86.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/CpuArch.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Delta.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzFind.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzFindOpt.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzmaDec.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzmaEnc.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Lzma86Dec.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Lzma86Enc.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzmaLib.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Sort.c
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Alloc.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Bra.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Bra86.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/BraIA64.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/CpuArch.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Delta.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/LzFind.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/LzmaDec.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/LzmaEnc.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Lzma86Dec.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Sort.c
 
 CHDR_FILES := \
 	${LZMA_FILES} \
@@ -38,7 +34,48 @@ include $(BUILD_STATIC_LIBRARY)
 include $(CLEAR_VARS)
 include $(LOCAL_PATH)/Locals.mk
 
-LOCAL_CFLAGS += -DSTACK_LINE_READER_BUFFER_SIZE=1024 -DHAVE_DLFCN_H -DRC_DISABLE_LUA -D_7ZIP_ST
+LUA_FILES := \
+	$(SRC)/ext/lua/lapi.c \
+	$(SRC)/ext/lua/lauxlib.c \
+	$(SRC)/ext/lua/lbaselib.c \
+	$(SRC)/ext/lua/lcode.c \
+	$(SRC)/ext/lua/lcorolib.c \
+	$(SRC)/ext/lua/lctype.c \
+	$(SRC)/ext/lua/ldblib.c \
+	$(SRC)/ext/lua/ldebug.c \
+	$(SRC)/ext/lua/ldo.c \
+	$(SRC)/ext/lua/ldump.c \
+	$(SRC)/ext/lua/lfunc.c \
+	$(SRC)/ext/lua/lgc.c \
+	$(SRC)/ext/lua/linit.c \
+	$(SRC)/ext/lua/liolib.c \
+	$(SRC)/ext/lua/llex.c \
+	$(SRC)/ext/lua/lmathlib.c \
+	$(SRC)/ext/lua/lmem.c \
+	$(SRC)/ext/lua/loadlib.c \
+	$(SRC)/ext/lua/lobject.c \
+	$(SRC)/ext/lua/lopcodes.c \
+	$(SRC)/ext/lua/loslib.c \
+	$(SRC)/ext/lua/lparser.c \
+	$(SRC)/ext/lua/lstate.c \
+	$(SRC)/ext/lua/lstring.c \
+	$(SRC)/ext/lua/lstrlib.c \
+	$(SRC)/ext/lua/ltable.c \
+	$(SRC)/ext/lua/ltablib.c \
+	$(SRC)/ext/lua/ltm.c \
+	$(SRC)/ext/lua/lundump.c \
+	$(SRC)/ext/lua/lutf8lib.c \
+	$(SRC)/ext/lua/lvm.c \
+	$(SRC)/ext/lua/lzio.c
+
+LOCAL_MODULE := lua
+LOCAL_SRC_FILES := $(LUA_FILES)
+include $(BUILD_STATIC_LIBRARY)
+
+include $(CLEAR_VARS)
+include $(LOCAL_PATH)/Locals.mk
+
+LOCAL_CFLAGS += -DSTACK_LINE_READER_BUFFER_SIZE=1024 -DHAVE_DLFCN_H -DRC_DISABLE_LUA -DZ7_ST
 
 # http://software.intel.com/en-us/articles/getting-started-on-optimizing-ndk-project-for-multiple-cpu-architectures
 
@@ -186,6 +223,14 @@ EXT_FILES := \
   $(SRC)/ext/libpng17/pngwtran.c \
   $(SRC)/ext/libpng17/pngwutil.c \
   $(SRC)/ext/basis_universal/basisu_transcoder.cpp \
+  $(SRC)/ext/imgui/imgui.cpp \
+  $(SRC)/ext/imgui/imgui_demo.cpp \
+  $(SRC)/ext/imgui/imgui_draw.cpp \
+  $(SRC)/ext/imgui/imgui_extras.cpp \
+  $(SRC)/ext/imgui/imgui_impl_thin3d.cpp \
+  $(SRC)/ext/imgui/imgui_impl_platform.cpp \
+  $(SRC)/ext/imgui/imgui_tables.cpp \
+  $(SRC)/ext/imgui/imgui_widgets.cpp \
   $(SRC)/ext/jpge/jpgd.cpp \
   $(SRC)/ext/jpge/jpge.cpp \
   $(SRC)/ext/sha1/sha1.cpp \
@@ -325,6 +370,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/CPUDetect.cpp \
   $(SRC)/Common/ExceptionHandlerSetup.cpp \
   $(SRC)/Common/FakeCPUDetect.cpp \
+  $(SRC)/Common/GhidraClient.cpp \
   $(SRC)/Common/Log.cpp \
   $(SRC)/Common/Log/LogManager.cpp \
   $(SRC)/Common/LogReporting.cpp \
@@ -349,7 +395,7 @@ include $(BUILD_STATIC_LIBRARY)
 # Next up, Core, GPU, and other core parts shared by headless.
 include $(CLEAR_VARS)
 include $(LOCAL_PATH)/Locals.mk
-LOCAL_WHOLE_STATIC_LIBRARIES += ppsspp_common libchdr
+LOCAL_WHOLE_STATIC_LIBRARIES += ppsspp_common libchdr lua
 
 ifeq ($(TARGET_ARCH_ABI),x86_64)
 ARCH_FILES := \
@@ -433,7 +479,6 @@ EXEC_AND_LIB_FILES := \
   $(ARCH_FILES) \
   $(GPU_VULKAN_FILES) \
   $(SRC)/ext/xxhash.c \
-  TestRunner.cpp \
   $(SRC)/Core/MIPS/MIPS.cpp.arm \
   $(SRC)/Core/MIPS/MIPSAnalyst.cpp \
   $(SRC)/Core/MIPS/MIPSDis.cpp \
@@ -481,6 +526,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/GPU/Common/SoftwareTransformCommon.cpp.arm \
   $(SRC)/GPU/Common/ReinterpretFramebuffer.cpp \
   $(SRC)/GPU/Common/DepthBufferCommon.cpp \
+  $(SRC)/GPU/Common/DepthRaster.cpp \
   $(SRC)/GPU/Common/VertexDecoderCommon.cpp.arm \
   $(SRC)/GPU/Common/VertexDecoderHandwritten.cpp.arm \
   $(SRC)/GPU/Common/TextureCacheCommon.cpp.arm \
@@ -502,6 +548,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/GPU/Debugger/GECommandTable.cpp \
   $(SRC)/GPU/Debugger/Playback.cpp \
   $(SRC)/GPU/Debugger/Record.cpp \
+  $(SRC)/GPU/Debugger/State.cpp \
   $(SRC)/GPU/Debugger/Stepping.cpp \
   $(SRC)/GPU/GLES/FramebufferManagerGLES.cpp \
   $(SRC)/GPU/GLES/StencilBufferGLES.cpp \
@@ -550,6 +597,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Instance.cpp \
   $(SRC)/Core/KeyMap.cpp \
   $(SRC)/Core/KeyMapDefaults.cpp \
+  $(SRC)/Core/LuaContext.cpp \
   $(SRC)/Core/Loaders.cpp \
   $(SRC)/Core/PSPLoaders.cpp \
   $(SRC)/Core/FileLoaders/CachingFileLoader.cpp \
@@ -558,6 +606,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/FileLoaders/LocalFileLoader.cpp \
   $(SRC)/Core/FileLoaders/RamCachingFileLoader.cpp \
   $(SRC)/Core/FileLoaders/RetryingFileLoader.cpp \
+  $(SRC)/Core/FileLoaders/ZipFileLoader.cpp \
   $(SRC)/Core/MemFault.cpp \
   $(SRC)/Core/MemMap.cpp \
   $(SRC)/Core/MemMapFunctions.cpp \
@@ -568,7 +617,6 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Screenshot.cpp \
   $(SRC)/Core/System.cpp \
   $(SRC)/Core/TiltEventProcessor.cpp \
-  $(SRC)/Core/ThreadPools.cpp \
   $(SRC)/Core/WebServer.cpp \
   $(SRC)/Core/Debugger/Breakpoints.cpp \
   $(SRC)/Core/Debugger/DisassemblyManager.cpp \
@@ -600,6 +648,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Dialog/PSPNetconfDialog.cpp \
   $(SRC)/Core/Dialog/PSPNpSigninDialog.cpp \
   $(SRC)/Core/Dialog/PSPOskDialog.cpp \
+  $(SRC)/Core/Dialog/PSPOskConstants.cpp \
   $(SRC)/Core/Dialog/PSPScreenshotDialog.cpp \
   $(SRC)/Core/Dialog/PSPPlaceholderDialog.cpp \
   $(SRC)/Core/Dialog/PSPSaveDialog.cpp \
@@ -610,6 +659,8 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/ReplaceTables.cpp \
   $(SRC)/Core/HLE/HLE.cpp \
   $(SRC)/Core/HLE/KUBridge.cpp \
+  $(SRC)/Core/HLE/NetInetConstants.cpp \
+  $(SRC)/Core/HLE/SocketManager.cpp \
   $(SRC)/Core/HLE/Plugins.cpp \
   $(SRC)/Core/HLE/sceAdler.cpp \
   $(SRC)/Core/HLE/sceAtrac.cpp \
@@ -651,17 +702,24 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceMpeg.cpp \
   $(SRC)/Core/HLE/sceMd5.cpp \
   $(SRC)/Core/HLE/sceMp4.cpp \
+  $(SRC)/Core/HLE/sceAac.cpp \
   $(SRC)/Core/HLE/sceMp3.cpp \
   $(SRC)/Core/HLE/sceNet.cpp \
+  $(SRC)/Core/HLE/sceNet_lib.cpp \
   $(SRC)/Core/HLE/proAdhoc.cpp \
   $(SRC)/Core/HLE/proAdhocServer.cpp \
   $(SRC)/Core/HLE/sceNetAdhoc.cpp \
+  $(SRC)/Core/HLE/sceNetAdhocMatching.cpp \
+  $(SRC)/Core/HLE/sceNetApctl.cpp \
+  $(SRC)/Core/HLE/sceNetInet.cpp \
+  $(SRC)/Core/HLE/sceNetResolver.cpp \
   $(SRC)/Core/HLE/sceOpenPSID.cpp \
   $(SRC)/Core/HLE/sceP3da.cpp \
   $(SRC)/Core/HLE/sceMt19937.cpp \
   $(SRC)/Core/HLE/sceParseHttp.cpp \
   $(SRC)/Core/HLE/sceParseUri.cpp \
   $(SRC)/Core/HLE/scePower.cpp \
+  $(SRC)/Core/HLE/sceReg.cpp \
   $(SRC)/Core/HLE/sceRtc.cpp \
   $(SRC)/Core/HLE/scePsmf.cpp \
   $(SRC)/Core/HLE/sceSas.cpp \
@@ -693,6 +751,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/MIPS/JitCommon/JitCommon.cpp \
   $(SRC)/Core/MIPS/JitCommon/JitBlockCache.cpp \
   $(SRC)/Core/MIPS/JitCommon/JitState.cpp \
+  $(SRC)/Core/Util/AtracTrack.cpp \
   $(SRC)/Core/Util/AudioFormat.cpp \
   $(SRC)/Core/Util/MemStick.cpp \
   $(SRC)/Core/Util/PortManager.cpp \
@@ -700,6 +759,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Util/GameManager.cpp \
   $(SRC)/Core/Util/BlockAllocator.cpp \
   $(SRC)/Core/Util/PPGeDraw.cpp \
+  $(SRC)/Core/Util/RecentFiles.cpp \
   $(SRC)/git-version.cpp
 
 LOCAL_MODULE := ppsspp_core
@@ -826,6 +886,12 @@ LOCAL_SRC_FILES := \
   $(SRC)/android/jni/AndroidVulkanContext.cpp \
   $(SRC)/android/jni/AndroidAudio.cpp \
   $(SRC)/android/jni/OpenSLContext.cpp \
+  $(SRC)/UI/ImDebugger/ImDebugger.cpp \
+  $(SRC)/UI/ImDebugger/ImGe.cpp \
+  $(SRC)/UI/ImDebugger/ImConsole.cpp \
+  $(SRC)/UI/ImDebugger/ImDisasmView.cpp \
+  $(SRC)/UI/ImDebugger/ImMemView.cpp \
+  $(SRC)/UI/ImDebugger/ImStructViewer.cpp \
   $(SRC)/UI/AudioCommon.cpp \
   $(SRC)/UI/BackgroundAudio.cpp \
   $(SRC)/UI/DiscordIntegration.cpp \
@@ -838,6 +904,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/MainScreen.cpp \
   $(SRC)/UI/TabbedDialogScreen.cpp \
   $(SRC)/UI/MemStickScreen.cpp \
+  $(SRC)/UI/IAPScreen.cpp \
   $(SRC)/UI/MiscScreens.cpp \
   $(SRC)/UI/RemoteISOScreen.cpp \
   $(SRC)/UI/ReportScreen.cpp \
@@ -850,6 +917,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/GameScreen.cpp \
   $(SRC)/UI/ControlMappingScreen.cpp \
   $(SRC)/UI/GameSettingsScreen.cpp \
+  $(SRC)/UI/DeveloperToolsScreen.cpp \
   $(SRC)/UI/GPUDriverTestScreen.cpp \
   $(SRC)/UI/TiltAnalogSettingsScreen.cpp \
   $(SRC)/UI/TouchControlLayoutScreen.cpp \

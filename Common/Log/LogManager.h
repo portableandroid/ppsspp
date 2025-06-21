@@ -21,12 +21,12 @@
 
 #include <mutex>
 #include <vector>
-#include <cstdarg>
 #include <cstdio>
 
-#include "Common/Data/Format/IniFile.h"
+#include "Common/Common.h"
 #include "Common/CommonFuncs.h"
 #include "Common/Log.h"
+#include "Common/File/Path.h"
 
 #define	MAX_MESSAGES 8000   
 
@@ -42,123 +42,93 @@ struct LogMessage {
 	std::string msg;  // The actual log message.
 };
 
-// pure virtual interface
-class LogListener {
-public:
-	virtual ~LogListener() = default;
-
-	virtual void Log(const LogMessage &msg) = 0;
+enum class LogOutput {
+	Stdio = (1 << 0),
+	DebugString = (1 << 1),
+	RingBuffer = (1 << 2),
+	File = (1 << 3),
+	WinConsole = (1 << 4),
+	Printf = (1 << 5),
+	ExternalCallback = (1 << 6),
 };
+ENUM_CLASS_BITOPS(LogOutput);
 
-class FileLogListener : public LogListener {
+class RingbufferLog {
 public:
-	FileLogListener(const char *filename);
-	~FileLogListener();
-
-	void Log(const LogMessage &msg) override;
-
-	bool IsValid() { if (!fp_) return false; else return true; }
-	bool IsEnabled() const { return m_enable; }
-	void SetEnabled(bool enable) { m_enable = enable; }
-
-	const char *GetName() const { return "file"; }
-
-private:
-	std::mutex m_log_lock;
-	FILE *fp_ = nullptr;
-	bool m_enable;
-};
-
-class OutputDebugStringLogListener : public LogListener {
-public:
-	void Log(const LogMessage &msg) override;
-};
-
-class RingbufferLogListener : public LogListener {
-public:
-	void Log(const LogMessage &msg) override;
-
-	bool IsEnabled() const { return enabled_; }
-	void SetEnabled(bool enable) { enabled_ = enable; }
-
+	void Log(const LogMessage &msg);
 	int GetCount() const { return count_ < MAX_LOGS ? count_ : MAX_LOGS; }
-	const char *TextAt(int i) const { return messages_[(curMessage_ - i - 1) & (MAX_LOGS - 1)].msg.c_str(); }
+	std::string_view TextAt(int i) const { return messages_[(curMessage_ - i - 1) & (MAX_LOGS - 1)].msg; }
 	LogLevel LevelAt(int i) const { return messages_[(curMessage_ - i - 1) & (MAX_LOGS - 1)].level; }
 
+	void Clear() {
+		curMessage_ = 0;
+		count_ = 0;
+	}
+
 private:
-	enum { MAX_LOGS = 128 };
+	enum { MAX_LOGS = 256 };
 	LogMessage messages_[MAX_LOGS];
 	int curMessage_ = 0;
 	int count_ = 0;
-	bool enabled_ = false;
 };
 
-// TODO: A simple buffered log that can be used to display the log in-window
-// on Android etc.
-// class BufferedLogListener { ... }
-
-struct LogChannel {
-	char m_shortName[32]{};
-	LogLevel level;
-	bool enabled;
-};
-
+class Section;
 class ConsoleListener;
-class StdioListener;
+
+typedef void (*LogCallback)(const LogMessage &message, void *userdata);
+extern bool *g_bLogEnabledSetting;
 
 class LogManager {
-private:
-	LogManager(bool *enabledSetting);
+public:
+	LogManager();
 	~LogManager();
 
-	// Prevent copies.
-	LogManager(const LogManager &) = delete;
-	void operator=(const LogManager &) = delete;
-
-	LogChannel log_[(size_t)Log::NUMBER_OF_LOGS];
-	FileLogListener *fileLog_ = nullptr;
-#if PPSSPP_PLATFORM(WINDOWS)
-	ConsoleListener *consoleLog_ = nullptr;
-#endif
-	StdioListener *stdioLog_ = nullptr;
-	OutputDebugStringLogListener *debuggerLog_ = nullptr;
-	RingbufferLogListener *ringLog_ = nullptr;
-	static LogManager *logManager_;  // Singleton. Ugh.
-
-	std::mutex listeners_lock_;
-	std::vector<LogListener*> listeners_;
-
-public:
-	void AddListener(LogListener *listener);
-	void RemoveListener(LogListener *listener);
+	void SetOutputsEnabled(LogOutput outputs);
+	LogOutput GetOutputsEnabled() const {
+		return outputs_;
+	}
+	void EnableOutput(LogOutput output) {
+		SetOutputsEnabled(outputs_ | output);
+	}
+	void DisableOutput(LogOutput output) {
+		LogOutput temp = outputs_;
+		temp &= ~output;
+		SetOutputsEnabled(temp);
+	}
+	void EnableOutput(LogOutput output, bool enabled) {
+		if (enabled) {
+			EnableOutput(output);
+		} else {
+			DisableOutput(output);
+		}
+	}
 
 	static u32 GetMaxLevel() { return (u32)MAX_LOGLEVEL;	}
 	static int GetNumChannels() { return (int)Log::NUMBER_OF_LOGS; }
 
 	void LogLine(LogLevel level, Log type,
 				 const char *file, int line, const char *fmt, va_list args);
-	bool IsEnabled(LogLevel level, Log type);
 
 	LogChannel *GetLogChannel(Log type) {
-		return &log_[(size_t)type];
+		return &g_log[(size_t)type];
 	}
 
 	void SetLogLevel(Log type, LogLevel level) {
-		log_[(size_t)type].level = level;
+		g_log[(size_t)type].level = level;
 	}
 
 	void SetAllLogLevels(LogLevel level) {
 		for (int i = 0; i < (int)Log::NUMBER_OF_LOGS; ++i) {
-			log_[i].level = level;
+			g_log[i].level = level;
 		}
 	}
 
 	void SetEnabled(Log type, bool enable) {
-		log_[(size_t)type].enabled = enable;
+		g_log[(size_t)type].enabled = enable;
 	}
 
 	LogLevel GetLogLevel(Log type) {
-		return log_[(size_t)type].level;
+		return g_log[(size_t)type].level;
 	}
 
 #if PPSSPP_PLATFORM(WINDOWS)
@@ -167,31 +137,55 @@ public:
 	}
 #endif
 
-	StdioListener *GetStdioListener() const {
-		return stdioLog_;
+	const RingbufferLog *GetRingbuffer() const {
+		return &ringLog_;
 	}
 
-	OutputDebugStringLogListener *GetDebuggerListener() const {
-		return debuggerLog_;
+	void Init(bool *enabledSetting, bool headless = false);
+	void Shutdown();
+
+	void SetExternalLogCallback(LogCallback callback, void *userdata) {
+		externalCallback_ = callback;
+		externalUserData_ = userdata;
 	}
 
-	RingbufferLogListener *GetRingbufferListener() const {
-		return ringLog_;
-	}
-
-	static inline LogManager* GetInstance() {
-		return logManager_;
-	}
-
-	static void SetInstance(LogManager *logManager) {
-		logManager_ = logManager;
-	}
-
-	static void Init(bool *enabledSetting);
-	static void Shutdown();
-
-	void ChangeFileLog(const char *filename);
+	void SetFileLogPath(const Path &filename);
+	const Path &GetLogFilePath() const { return logFilename_; }
 
 	void SaveConfig(Section *section);
 	void LoadConfig(const Section *section, bool debugDefaults);
+
+	static const char *GetLogTypeName(Log type);
+
+private:
+	// Prevent copies.
+	LogManager(const LogManager &) = delete;
+	void operator=(const LogManager &) = delete;
+
+	bool initialized_ = false;
+
+#if PPSSPP_PLATFORM(WINDOWS)
+	ConsoleListener *consoleLog_ = nullptr;
+#endif
+	// Stdio logging
+	void StdioLog(const LogMessage &message);
+	std::mutex stdioLock_;
+	bool stdioUseColor_ = true;
+
+	LogOutput outputs_ = (LogOutput)0;
+
+	// File logging
+	std::mutex logFileLock_;
+	FILE *fp_ = nullptr;
+	bool logFileOpenFailed_ = false;
+	Path logFilename_;
+
+	// Ring buffer
+	RingbufferLog ringLog_;
+
+	// Callback
+	LogCallback externalCallback_ = nullptr;
+	void *externalUserData_ = nullptr;
 };
+
+extern LogManager g_logManager;

@@ -61,10 +61,10 @@ std::pair<B,A> flip_pair(const std::pair<A,B> &p) {
 u32 JitBreakpoint(uint32_t addr)
 {
 	// Should we skip this breakpoint?
-	if (CBreakPoints::CheckSkipFirst() == currentMIPS->pc || CBreakPoints::CheckSkipFirst() == addr)
+	if (g_breakpoints.CheckSkipFirst() == currentMIPS->pc || g_breakpoints.CheckSkipFirst() == addr)
 		return 0;
 
-	BreakAction result = CBreakPoints::ExecBreakPoint(addr);
+	BreakAction result = g_breakpoints.ExecBreakPoint(addr);
 	if ((result & BREAK_ACTION_PAUSE) == 0)
 		return 0;
 
@@ -93,16 +93,16 @@ u32 JitBreakpoint(uint32_t addr)
 
 static u32 JitMemCheck(u32 addr, u32 pc) {
 	// Should we skip this breakpoint?
-	if (CBreakPoints::CheckSkipFirst() == currentMIPS->pc)
+	if (g_breakpoints.CheckSkipFirst() == currentMIPS->pc)
 		return 0;
 
 	// Did we already hit one?
-	if (coreState != CORE_RUNNING && coreState != CORE_NEXTFRAME)
+	if (coreState != CORE_RUNNING_CPU && coreState != CORE_NEXTFRAME)
 		return 1;
 
 	// Note: pc may be the delay slot.
-	CBreakPoints::ExecOpMemCheck(addr, pc);
-	return coreState == CORE_RUNNING || coreState == CORE_NEXTFRAME ? 0 : 1;
+	g_breakpoints.ExecOpMemCheck(addr, pc);
+	return coreState == CORE_RUNNING_CPU || coreState == CORE_NEXTFRAME ? 0 : 1;
 }
 
 static void JitLogMiss(MIPSOpcode op)
@@ -132,7 +132,7 @@ Jit::Jit(MIPSState *mipsState)
 
 	// The debugger sets this so that "go" on a breakpoint will actually... go.
 	// But if they reset, we can end up hitting it by mistake, since it's based on PC and ticks.
-	CBreakPoints::SetSkipFirst(0);
+	g_breakpoints.SetSkipFirst(0);
 }
 
 Jit::~Jit() {
@@ -158,7 +158,7 @@ void Jit::DoState(PointerWrap &p) {
 
 	// The debugger sets this so that "go" on a breakpoint will actually... go.
 	// But if they load a state, we can end up hitting it by mistake, since it's based on PC and ticks.
-	CBreakPoints::SetSkipFirst(0);
+	g_breakpoints.SetSkipFirst(0);
 }
 
 void Jit::UpdateFCR31() {
@@ -583,7 +583,7 @@ bool Jit::ReplaceJalTo(u32 dest) {
 	js.compilerPC += 4;
 	// No writing exits, keep going!
 
-	if (CBreakPoints::HasMemChecks()) {
+	if (g_breakpoints.HasMemChecks()) {
 		// We could modify coreState, so we need to write PC and check.
 		// Otherwise, PC may end up on the jal.  We add 4 to skip the delay slot.
 		MOV(32, MIPSSTATE_VAR(pc), Imm32(GetCompilerPC() + 4));
@@ -616,7 +616,7 @@ void Jit::Comp_ReplacementFunc(MIPSOpcode op) {
 		if ((entry->flags & (REPFLAG_HOOKENTER | REPFLAG_HOOKEXIT)) == 0) {
 			// Any breakpoint at the func entry was already tripped, so we can still run the replacement.
 			// That's a common case - just to see how often the replacement hits.
-			disabled = CBreakPoints::RangeContainsBreakPoint(GetCompilerPC() + sizeof(u32), funcSize - sizeof(u32));
+			disabled = g_breakpoints.RangeContainsBreakPoint(GetCompilerPC() + sizeof(u32), funcSize - sizeof(u32));
 		}
 	}
 
@@ -696,9 +696,10 @@ void Jit::Comp_Generic(MIPSOpcode op) {
 		else
 			ABI_CallFunctionC(func, op.encoding);
 		ApplyRoundingMode();
+	} else {
+		// These are basically always due to some kind of crash or corruption now.
+		ERROR_LOG(Log::JIT, "Trying to compile instruction %08x that can't be interpreted", op.encoding);
 	}
-	else
-		ERROR_LOG_REPORT(Log::JIT, "Trying to compile instruction %08x that can't be interpreted", op.encoding);
 
 	const MIPSInfo info = MIPSGetInfo(op);
 	if ((info & IS_VFPU) != 0 && (info & VFPU_NO_PREFIX) == 0)
@@ -840,7 +841,7 @@ void Jit::WriteSyscallExit() {
 }
 
 bool Jit::CheckJitBreakpoint(u32 addr, int downcountOffset) {
-	if (CBreakPoints::IsAddressBreakPoint(addr)) {
+	if (g_breakpoints.IsAddressBreakPoint(addr)) {
 		SaveFlags();
 		FlushAll();
 		MOV(32, MIPSSTATE_VAR(pc), Imm32(GetCompilerPC()));
@@ -866,7 +867,7 @@ bool Jit::CheckJitBreakpoint(u32 addr, int downcountOffset) {
 }
 
 void Jit::CheckMemoryBreakpoint(int instructionOffset, MIPSGPReg rs, int offset) {
-	if (!CBreakPoints::HasMemChecks())
+	if (!g_breakpoints.HasMemChecks())
 		return;
 
 	int totalInstructionOffset = instructionOffset + (js.inDelaySlot ? 1 : 0);
@@ -884,7 +885,7 @@ void Jit::CheckMemoryBreakpoint(int instructionOffset, MIPSGPReg rs, int offset)
 	if (gpr.IsImm(rs)) {
 		uint32_t iaddr = gpr.GetImm(rs) + offset;
 		MemCheck check;
-		if (CBreakPoints::GetMemCheckInRange(iaddr, size, &check)) {
+		if (g_breakpoints.GetMemCheckInRange(iaddr, size, &check)) {
 			if (!(check.cond & MEMCHECK_READ) && !isWrite)
 				return;
 			if (!(check.cond & MEMCHECK_WRITE) && isWrite)
@@ -904,7 +905,7 @@ void Jit::CheckMemoryBreakpoint(int instructionOffset, MIPSGPReg rs, int offset)
 			SetJumpTarget(skipCheck);
 		}
 	} else {
-		const auto memchecks = CBreakPoints::GetMemCheckRanges(isWrite);
+		const auto memchecks = g_breakpoints.GetMemCheckRanges(isWrite);
 		bool possible = !memchecks.empty();
 		if (!possible)
 			return;

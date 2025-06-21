@@ -18,6 +18,7 @@
 #include "ppsspp_config.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 
 #include "Common/Render/DrawBuffer.h"
@@ -45,8 +46,9 @@
 #include "Core/System.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/HLE/sceUtility.h"
+#include "Core/Util/RecentFiles.h"
 #include "GPU/GPUState.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/Common/PostShader.h"
 
 #include "UI/ControlMappingScreen.h"
@@ -211,7 +213,7 @@ public:
 			lastIndex_ = nextIndex_;
 		}
 
-		if (g_Config.HasRecentIsos()) {
+		if (g_recentFiles.HasAny()) {
 			std::shared_ptr<GameInfo> lastInfo = GetInfo(dc, lastIndex_);
 			std::shared_ptr<GameInfo> nextInfo = GetInfo(dc, nextIndex_);
 			dc.Flush();
@@ -228,12 +230,14 @@ public:
 
 private:
 	void CheckNext(UIContext &dc, double t) {
-		if (!g_Config.HasRecentIsos()) {
+		if (!g_recentFiles.HasAny()) {
 			return;
 		}
 
+		std::vector<std::string> recents = g_recentFiles.GetRecentFiles();
+
 		for (int index = lastIndex_ + 1; index != lastIndex_; ++index) {
-			if (index < 0 || index >= (int)g_Config.RecentIsos().size()) {
+			if (index < 0 || index >= (int)recents.size()) {
 				if (lastIndex_ == -1)
 					break;
 				index = 0;
@@ -258,9 +262,9 @@ private:
 		if (index < 0) {
 			return nullptr;
 		}
-		const auto recentIsos = g_Config.RecentIsos();
+		const auto recentIsos = g_recentFiles.GetRecentFiles();
 		if (index >= (int)recentIsos.size())
-			return nullptr;
+			return std::shared_ptr<GameInfo>();
 		return g_gameInfoCache->GetInfo(dc.GetDrawContext(), Path(recentIsos[index]), GameInfoFlags::BG);
 	}
 
@@ -283,6 +287,102 @@ private:
 	int lastIndex_ = -1;
 	int nextIndex_ = -1;
 	double nextT_ = -INTERVAL;
+};
+
+class BouncingIconAnimation : public Animation {
+	public:
+		void Draw(UIContext &dc, double t, float alpha, float x, float y, float z) override {
+			dc.Flush();
+			dc.Begin();
+
+			// Handle change in resolution.
+			float xres = dc.GetBounds().w;
+			float yres = dc.GetBounds().h;
+			if (last_xres != xres || last_yres != yres) {
+				Recalculate(xres, yres);
+			}
+
+			// Draw the image.
+			float xpos = xbase + dc.GetBounds().x;
+			float ypos = ybase + dc.GetBounds().y;
+			ImageID icon = !color_ix && System_GetPropertyBool(SYSPROP_APP_GOLD) ? ImageID("I_ICONGOLD") : ImageID("I_ICON");
+			ui_draw2d.DrawImage(icon, xpos, ypos, scale, colors[color_ix], ALIGN_CENTER);
+			dc.Flush();
+
+			// Switch direction if within border.
+			bool should_recolor = true;
+			if (xbase > xres - border || xbase < border) {
+				xspeed *= -1.0f;
+				RandomizeColor();
+				should_recolor = false;
+			}
+
+			if (ybase > yres - border || ybase < border) {
+				yspeed *= -1.0f;
+
+				if (should_recolor) {
+					RandomizeColor();
+				}
+			}
+
+			// Place to border if out of bounds.
+			if (xbase > xres - border) xbase = xres - border;
+			else if (xbase < border) xbase = border;
+			if (ybase > yres - border) ybase = yres - border;
+			else if (ybase < border) ybase = border;
+
+			// Update location.
+			xbase += xspeed;
+			ybase += yspeed;
+		}
+
+	private:
+		static constexpr int COLOR_COUNT = 11;
+		static constexpr Color colors[COLOR_COUNT] = { 0xFFFFFFFF, 0xFFFFFF00, 0xFFFF0000, 0xFF00FF00, 0xFF0000FF,
+				0xFF00FFFF, 0xFFFF00FF, 0xFF4111D1, 0xFF3577F3, 0xFFAA77FF, 0xFF623B84 };
+
+		float xbase = 0.0f;
+		float ybase = 0.0f;	
+		float last_xres = 0.0f;
+		float last_yres = 0.0f;
+		float xspeed = 1.0f;
+		float yspeed = 1.0f;
+		float scale = 1.0f;
+		float border = 35.0f;
+		int color_ix = 0;
+		int last_color_ix = -1;
+		GMRng rng;
+
+		void Recalculate(int xres, int yres) {
+			// First calculation.
+			if (last_color_ix == -1) {
+				xbase = xres / 2.0f;
+				ybase = yres / 2.0f;
+				last_color_ix = 0;
+	
+				// Determine initial direction.
+				if ((int)(rng.F() * xres) % 2) xspeed *= -1.0f;
+				if ((int)(rng.F() * yres) % 2) yspeed *= -1.0f;
+			}
+
+			// Scale certain attributes to resolution.
+			scale = std::min(xres, yres) / 400.0f;
+			float speed = scale < 2.5f ? scale * 0.58f : scale * 0.46f;
+			xspeed = std::signbit(xspeed) ? speed * -1.0f : speed;
+			yspeed = std::signbit(yspeed) ? speed * -1.0f : speed;
+			border = 35.0f * scale;
+
+			last_xres = xres;
+			last_yres = yres;
+		}
+
+		void RandomizeColor() {
+			do {
+				color_ix = (int)(rng.F() * xbase) % COLOR_COUNT;
+			} while (color_ix == last_color_ix);
+
+			last_color_ix = color_ix;
+		}
 };
 
 // TODO: Add more styles. Remember to add to the enum in ConfigValues.h and the selector in GameSettings too.
@@ -330,6 +430,9 @@ void DrawBackground(UIContext &dc, float alpha, float x, float y, float z) {
 			break;
 		case BackgroundAnimation::MOVING_BACKGROUND:
 			g_Animation.reset(new MovingBackground());
+			break;
+		case BackgroundAnimation::BOUNCING_ICON:
+			g_Animation.reset(new BouncingIconAnimation());
 			break;
 		default:
 			g_Animation.reset(nullptr);
@@ -520,34 +623,45 @@ void PromptScreen::CreateViews() {
 	// Scrolling action menu to the right.
 	using namespace UI;
 
+	const bool vertical = UseVerticalLayout();
+
 	root_ = new AnchorLayout();
+	ViewGroup *rightColumnItems;
 
-	root_->Add(new TextView(message_, ALIGN_LEFT | FLAG_WRAP_TEXT, false, new AnchorLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 15, 15, 330, 10)))->SetClip(false);
+	if (!vertical) {
+		// Horizontal layout.
+		root_->Add(new TextView(message_, ALIGN_LEFT | FLAG_WRAP_TEXT, false, new AnchorLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 15, 105, 330, 10)))->SetClip(false);
+		rightColumnItems = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(300, WRAP_CONTENT, NONE, 105, 15, NONE));
+		root_->Add(rightColumnItems);
+	} else {
+		// Vertical layout
+		root_->Add(new TextView(message_, ALIGN_LEFT | FLAG_WRAP_TEXT, false, new AnchorLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 15, 15, 55, NONE)))->SetClip(false);
+		// Leave space for the version at the bottom.
+		rightColumnItems = new LinearLayout(ORIENT_HORIZONTAL, new AnchorLayoutParams(FILL_PARENT, WRAP_CONTENT, 15, NONE, 15, 65));
+		root_->Add(rightColumnItems);
+	}
 
-	ViewGroup *rightColumnItems = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(300, WRAP_CONTENT, NONE, 15, 15, NONE));
-	root_->Add(rightColumnItems);
-
-	Choice *yesButton = rightColumnItems->Add(new Choice(yesButtonText_));
-	yesButton->OnClick.Handle(this, &PromptScreen::OnYes);
-	root_->SetDefaultFocusView(yesButton);
+	Choice *yesButton = rightColumnItems->Add(new Choice(yesButtonText_, vertical ? new LinearLayoutParams(1.0f) : nullptr));
+	yesButton->SetCentered(vertical);
+	yesButton->OnClick.Add([this](UI::EventParams &e) {
+		TriggerFinish(DR_OK);
+		return UI::EVENT_DONE;
+	});
 	if (!noButtonText_.empty()) {
-		rightColumnItems->Add(new Choice(noButtonText_))->OnClick.Handle(this, &PromptScreen::OnNo);
+		Choice *noButton = rightColumnItems->Add(new Choice(noButtonText_, vertical ? new LinearLayoutParams(1.0f) : nullptr));
+		noButton->SetCentered(vertical);
+		noButton->OnClick.Add([this](UI::EventParams &e) {
+			TriggerFinish(DR_CANCEL);
+			return UI::EVENT_DONE;
+		});
+		root_->SetDefaultFocusView(noButton);
 	} else {
 		// This is an information screen, not a question.
-		// Sneak in the version of PPSSPP in the corner, for debug-reporting user screenshots.
+		// Sneak in the version of PPSSPP in the bottom left corner, for debug-reporting user screenshots.
 		std::string version = System_GetProperty(SYSPROP_BUILD_VERSION);
 		root_->Add(new TextView(version, 0, true, new AnchorLayoutParams(10.0f, NONE, NONE, 10.0f)));
+		root_->SetDefaultFocusView(yesButton);
 	}
-}
-
-UI::EventReturn PromptScreen::OnYes(UI::EventParams &e) {
-	TriggerFinish(DR_OK);
-	return UI::EVENT_DONE;
-}
-
-UI::EventReturn PromptScreen::OnNo(UI::EventParams &e) {
-	TriggerFinish(DR_CANCEL);
-	return UI::EVENT_DONE;
 }
 
 void PromptScreen::TriggerFinish(DialogResult result) {
@@ -763,6 +877,7 @@ void LogoScreen::DrawForeground(UIContext &dc) {
 	// Manually formatting UTF-8 is fun.  \xXX doesn't work everywhere.
 	snprintf(temp, sizeof(temp), "%s Henrik Rydg%c%crd", cr->T_cstr("created", "Created by"), 0xC3, 0xA5);
 	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
+		UI::DrawIconShine(dc, Bounds::FromCenter(bounds.centerX() - 120, bounds.centerY() - 30, 60.0f), 0.7f, true);
 		dc.Draw()->DrawImage(ImageID("I_ICONGOLD"), bounds.centerX() - 120, bounds.centerY() - 30, 1.2f, 0xFFFFFFFF, ALIGN_CENTER);
 	} else {
 		dc.Draw()->DrawImage(ImageID("I_ICON"), bounds.centerX() - 120, bounds.centerY() - 30, 1.2f, 0xFFFFFFFF, ALIGN_CENTER);
@@ -802,11 +917,17 @@ void CreditsScreen::CreateViews() {
 	back->OnClick.Handle<UIScreen>(this, &UIScreen::OnOK);
 	root_->SetDefaultFocusView(back);
 
+	const bool gold = System_GetPropertyBool(SYSPROP_APP_GOLD);
+
 	// Really need to redo this whole layout with some linear layouts...
 
 	int rightYOffset = 0;
 	if (!System_GetPropertyBool(SYSPROP_APP_GOLD)) {
-		root_->Add(new Button(mm->T("Buy PPSSPP Gold"), new AnchorLayoutParams(260, 64, NONE, NONE, 10, 84, false)))->OnClick.Handle(this, &CreditsScreen::OnSupport);
+		ScreenManager *sm = screenManager();
+		root_->Add(new Button(mm->T("Buy PPSSPP Gold"), new AnchorLayoutParams(260, 64, NONE, NONE, 10, 84, false)))->OnClick.Add([sm](UI::EventParams) {
+			LaunchBuyGold(sm);
+			return UI::EVENT_DONE;
+		});
 		rightYOffset = 74;
 	}
 	root_->Add(new Button(cr->T("PPSSPP Forums"), new AnchorLayoutParams(260, 64, 10, NONE, NONE, 158, false)))->OnClick.Handle(this, &CreditsScreen::OnForums);
@@ -818,20 +939,12 @@ void CreditsScreen::CreateViews() {
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	root_->Add(new Button(cr->T("Share PPSSPP"), new AnchorLayoutParams(260, 64, NONE, NONE, 10, rightYOffset + 158, false)))->OnClick.Handle(this, &CreditsScreen::OnShare);
 #endif
-	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
-		root_->Add(new ImageView(ImageID("I_ICONGOLD"), "", IS_DEFAULT, new AnchorLayoutParams(100, 64, 10, 10, NONE, NONE, false)));
-	} else {
-		root_->Add(new ImageView(ImageID("I_ICON"), "", IS_DEFAULT, new AnchorLayoutParams(100, 64, 10, 10, NONE, NONE, false)));
-	}
-}
 
-UI::EventReturn CreditsScreen::OnSupport(UI::EventParams &e) {
-#ifdef __ANDROID__
-	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "market://details?id=org.ppsspp.ppssppgold");
-#else
-	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/buygold");
-#endif
-	return UI::EVENT_DONE;
+	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
+		root_->Add(new ShinyIcon(ImageID("I_ICONGOLD"), new AnchorLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 10, 10, NONE, NONE, false)))->SetScale(1.5f);
+	} else {
+		root_->Add(new ImageView(ImageID("I_ICON"), "", IS_DEFAULT, new AnchorLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 10, 10, NONE, NONE, false)))->SetScale(1.5f);
+	}
 }
 
 UI::EventReturn CreditsScreen::OnX(UI::EventParams &e) {
@@ -1078,7 +1191,9 @@ void SettingInfoMessage::Show(std::string_view text, const UI::View *refView) {
 			}
 		}
 	}
-	text_->SetText(text);
+	if (text_) {
+		text_->SetText(text);
+	}
 	timeShown_ = time_now_d();
 }
 
@@ -1098,13 +1213,14 @@ void SettingInfoMessage::Draw(UIContext &dc) {
 		alpha = MAX_ALPHA - MAX_ALPHA * (float)((sinceShow - timeToShow) / FADE_TIME);
 	}
 
-	if (alpha >= 0.1f) {
-		UI::Style style = dc.theme->popupStyle;
-		style.background.color = colorAlpha(style.background.color, alpha - 0.1f);
-		dc.FillRect(style.background, bounds_);
+	UI::Style style = dc.theme->tooltipStyle;
+
+	if (alpha >= 0.001f) {
+		uint32_t bgColor = alphaMul(style.background.color, alpha);
+		dc.FillRect(UI::Drawable(bgColor), bounds_);
 	}
 
-	uint32_t textColor = colorAlpha(dc.GetTheme().itemStyle.fgColor, alpha);
+	uint32_t textColor = alphaMul(style.fgColor, alpha);
 	text_->SetTextColor(textColor);
 	ViewGroup::Draw(dc);
 	showing_ = sinceShow <= timeToShow; // Don't consider fade time
@@ -1112,4 +1228,9 @@ void SettingInfoMessage::Draw(UIContext &dc) {
 
 std::string SettingInfoMessage::GetText() const {
 	return (showing_ && text_) ? text_->GetText() : "";
+}
+
+void ShinyIcon::Draw(UIContext &dc) {
+	UI::DrawIconShine(dc, bounds_, 1.0f, animated_);
+	UI::ImageView::Draw(dc);
 }

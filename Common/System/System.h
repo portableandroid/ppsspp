@@ -70,6 +70,8 @@ enum class SystemRequestType {
 	BROWSE_FOR_FILE,
 	BROWSE_FOR_FOLDER,
 
+	BROWSE_FOR_FILE_SAVE,
+
 	EXIT_APP,
 	RESTART_APP,  // For graphics backend changes
 	RECREATE_ACTIVITY,  // Android
@@ -96,7 +98,16 @@ enum class SystemRequestType {
 	MICROPHONE_COMMAND,
 
 	RUN_CALLBACK_IN_WNDPROC,
+
+	MOVE_TO_TRASH,
+
+	// for iOS IAP support
+	IAP_RESTORE_PURCHASES,
+	IAP_MAKE_PURCHASE,
 };
+
+// Run a closure on the main thread. Used to safely implement UI that runs on another thread.
+void System_RunOnMainThread(std::function<void()> func);
 
 // Implementations are supposed to process the request, and post the response to the g_RequestManager (see Message.h).
 // This is not to be used directly by applications, instead use the g_RequestManager to make the requests.
@@ -211,12 +222,21 @@ enum SystemProperty {
 	SYSPROP_OK_BUTTON_LEFT,
 
 	SYSPROP_MAIN_WINDOW_HANDLE,
+
+	SYSPROP_CAN_READ_BATTERY_PERCENTAGE,
+	SYSPROP_BATTERY_PERCENTAGE,
+
+	SYSPROP_ENOUGH_RAM_FOR_FULL_ISO,
+	SYSPROP_HAS_TRASH_BIN,
+
+	SYSPROP_USE_IAP,
 };
 
 enum class SystemNotification {
 	UI,
 	MEM_VIEW,
 	DISASSEMBLY,
+	DISASSEMBLY_AFTERSTEP,
 	DEBUG_MODE_CHANGE,
 	BOOT_DONE,  // this is sent from EMU thread! Make sure that Host handles it properly!
 	SYMBOL_MAP_UPDATED,
@@ -270,6 +290,8 @@ enum class UIMessage {
 	GAMESETTINGS_SEARCH,
 	SAVEDATA_SEARCH,
 	RESTART_GRAPHICS,
+	RECENT_FILES_CHANGED,
+	SAVE_FRAME_DUMP,
 };
 
 std::string System_GetProperty(SystemProperty prop);
@@ -296,7 +318,8 @@ void System_AudioClear();
 // These samples really have 16 bits of value, but can be a little out of range.
 // This is for pushing rate-controlled 44khz audio from emulation.
 // If you push a little too fast, we'll pitch up to a limit, for example.
-void System_AudioPushSamples(const int32_t *audio, int numSamples);
+// Volume is a unit-range multiplier.
+void System_AudioPushSamples(const int32_t *audio, int numSamples, float volume);
 
 inline void System_AudioResetStatCounters() {
 	return System_AudioGetDebugStats(nullptr, 0);

@@ -20,22 +20,16 @@
 // https://github.com/hrydgard/ppsspp/issues/3768
 
 #include "ppsspp_config.h"
-#include "StateMappingGLES.h"
+#include "GPU/GLES/StateMappingGLES.h"
 #include "Common/Profiler/Profiler.h"
 #include "Common/GPU/OpenGL/GLDebugLog.h"
 #include "Common/GPU/OpenGL/GLRenderManager.h"
 #include "Common/Data/Convert/SmallDataConvert.h"
 
-#include "GPU/Math3D.h"
 #include "GPU/GPUState.h"
 #include "GPU/ge_constants.h"
-#include "Core/System.h"
-#include "Core/Config.h"
 #include "GPU/GLES/GPU_GLES.h"
-#include "GPU/GLES/ShaderManagerGLES.h"
-#include "GPU/GLES/TextureCacheGLES.h"
 #include "GPU/GLES/FramebufferManagerGLES.h"
-#include "GPU/Common/FragmentShaderGenerator.h"
 
 static const GLushort glBlendFactorLookup[(size_t)BlendFactor::COUNT] = {
 	GL_ZERO,
@@ -142,7 +136,7 @@ void DrawEngineGLES::ApplyDrawState(int prim) {
 			bool alphaMask = gstate.isClearModeAlphaMask();
 			renderManager->SetNoBlendAndMask((colorMask ? 7 : 0) | (alphaMask ? 8 : 0));
 		} else {
-			pipelineState_.Convert(draw_->GetShaderLanguageDesc().bitwiseOps);
+			pipelineState_.Convert(draw_->GetShaderLanguageDesc().bitwiseOps, gstate_c.Use(GPU_USE_SHADER_BLENDING));
 			GenericMaskState &maskState = pipelineState_.maskState;
 			GenericBlendState &blendState = pipelineState_.blendState;
 			GenericLogicState &logicState = pipelineState_.logicState;

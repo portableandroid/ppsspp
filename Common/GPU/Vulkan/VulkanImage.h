@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include "VulkanLoader.h"
+#include "Common/Data/Collections/FastVec.h"
 
 class VulkanContext;
 class VulkanDeviceAllocator;
@@ -10,7 +12,7 @@ VK_DEFINE_HANDLE(VmaAllocation);
 class VulkanBarrierBatch;
 
 struct TextureCopyBatch {
-	std::vector<VkBufferImageCopy> copies;
+	FastVec<VkBufferImageCopy> copies;
 	VkBuffer buffer = VK_NULL_HANDLE;
 	void reserve(size_t mips) { copies.reserve(mips); }
 	bool empty() const { return copies.empty(); }

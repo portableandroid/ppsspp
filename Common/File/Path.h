@@ -123,7 +123,11 @@ public:
 
 	bool FilePathContainsNoCase(std::string_view needle) const;
 
+	// WARNING: This can return wrong results if two ContentURI have different root paths.
 	bool StartsWith(const Path &other) const;
+
+	// This handles ContentURI with different paths "correctly". Very specific use case.
+	bool StartsWithGlobalAndNotEqual(const Path &other) const;
 
 	bool operator <(const Path &other) const {
 		return path_ < other.path_;
@@ -142,12 +146,7 @@ private:
 	PathType type_;
 };
 
-// Utility function for parsing out file extensions.
-std::string GetExtFromString(std::string_view str);
-
-// Utility function for fixing the case of paths. Only present on Unix-like systems.
-
-#if HOST_IS_CASE_SENSITIVE
+// Utility function for fixing the case of paths. Only necessary on Unix-like systems.
 
 enum FixPathCaseBehavior {
 	FPC_FILE_MUST_EXIST,  // all path components must exist (rmdir, move from)
@@ -156,5 +155,3 @@ enum FixPathCaseBehavior {
 };
 
 bool FixPathCase(const Path &basePath, std::string &path, FixPathCaseBehavior behavior);
-
-#endif

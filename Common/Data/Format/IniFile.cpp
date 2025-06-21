@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <algorithm>  // for sort
 
 #include <inttypes.h>
 
@@ -12,7 +13,6 @@
 #include <strings.h>
 #endif
 
-#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -63,7 +63,7 @@ static bool ParseLineKey(std::string_view line, size_t &pos, std::string *keyOut
 }
 
 static bool ParseLineValue(std::string_view line, size_t &pos, std::string *valueOut) {
-	std::string value = "";
+	std::string value;
 
 	std::string_view strippedLine = StripSpaces(line.substr(pos));
 	if (strippedLine.size() >= 2 && strippedLine[0] == '"' && strippedLine[strippedLine.size() - 1] == '"') {
@@ -162,7 +162,7 @@ static std::string EscapeHash(std::string_view value) {
 	return result;
 }
 
-void ParsedIniLine::ParseFrom(std::string_view line) {
+ParsedIniLine::ParsedIniLine(std::string_view line) {
 	line = StripSpaces(line);
 	if (line.empty()) {
 		key.clear();
@@ -408,7 +408,7 @@ std::map<std::string, std::string> Section::ToMap() const {
 	std::map<std::string, std::string> outMap;
 	for (auto &line : lines_) {
 		if (!line.Key().empty()) {
-			outMap[std::string(line.Key())] = line.Value();
+			outMap.emplace(line.Key(), line.Value());
 		}
 	}
 	return outMap;
@@ -534,7 +534,7 @@ bool IniFile::Load(std::istream &in) {
 	while (!(in.eof() || in.fail()))
 	{
 		in.getline(templine, MAX_BYTES);
-		std::string line = templine;
+		std::string_view line = templine;
 
 		// Remove UTF-8 byte order marks.
 		if (line.substr(0, 3) == "\xEF\xBB\xBF") {
@@ -543,8 +543,8 @@ bool IniFile::Load(std::istream &in) {
 		 
 #ifndef _WIN32
 		// Check for CRLF eol and convert it to LF
-		if (!line.empty() && line.at(line.size()-1) == '\r') {
-			line.erase(line.size()-1);
+		if (!line.empty() && line.at(line.size() - 1) == '\r') {
+			line = line.substr(0, line.size() - 1);
 		}
 #endif
 
@@ -556,7 +556,7 @@ bool IniFile::Load(std::istream &in) {
 
 			if (sectionNameEnd != std::string::npos) {
 				// New section!
-				std::string sub = line.substr(1, sectionNameEnd - 1);
+				std::string_view sub = line.substr(1, sectionNameEnd - 1);
 				sections.push_back(std::make_unique<Section>(sub));
 
 				if (sectionNameEnd + 1 < line.size()) {
@@ -566,9 +566,7 @@ bool IniFile::Load(std::istream &in) {
 				if (sections.empty()) {
 					sections.push_back(std::make_unique<Section>(""));
 				}
-				ParsedIniLine parsedLine;
-				parsedLine.ParseFrom(line);
-				sections.back()->lines_.push_back(parsedLine);
+				sections.back()->lines_.emplace_back(line);
 			}
 		}
 	}

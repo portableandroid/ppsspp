@@ -9,15 +9,9 @@
 
 #pragma once
 
-#include <functional>
-#include <optional>
 #include <string>
-#include <utility>
-#include <vector>
 #include <set>
-#include <mutex>
 
-#include "Common/StringUtils.h"
 #include "Common/CommonTypes.h"
 #include "Core/Loaders.h"  // for IdentifiedFileType
 
@@ -54,6 +48,9 @@ bool IsBlockingExecution();
 //
 // * Savestates
 // * Slowdown time (though hard to fully prevent, could use crazy post shaders or software rendering...)
+// * Debugging
+// * Cheats
+// * and similar...
 bool HardcoreModeActive();
 
 // Same as ChallengeModeActive but comes with a convenient user message. Don't use for every-frame checks or UI enablement,
@@ -99,7 +96,6 @@ bool HasAchievementsOrLeaderboards();
 bool LoginAsync(const char *username, const char *password);
 void Logout();
 
-bool IsReadyToStart();
 void SetGame(const Path &path, IdentifiedFileType fileType, FileLoader *fileLoader);
 void ChangeUMD(const Path &path, FileLoader *fileLoader);  // for in-game UMD change
 void UnloadGame();  // Call when leaving a game.

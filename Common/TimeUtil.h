@@ -18,10 +18,15 @@ double from_time_raw_relative(uint64_t raw_time);
 double time_now_unix_utc();
 
 // Sleep. Does not necessarily have millisecond granularity, especially on Windows.
-void sleep_ms(int ms);
+// Requires a "reason" since sleeping generally should be very sparingly used. This
+// can be logged if desired to figure out where we're wasting time.
+void sleep_ms(int ms, const char *reason);
 
 // Precise sleep. Can consume a little bit of CPU on Windows at least.
 void sleep_precise(double seconds);
+
+// Random sleep, used for debugging.
+void sleep_random(double minSeconds, double maxSeconds);
 
 // Yield. Signals that this thread is busy-waiting but wants to allow other hyperthreads to run.
 void yield();
@@ -35,6 +40,7 @@ public:
 		return Instant();
 	}
 	double ElapsedSeconds() const;
+	double ElapsedMs() const { return ElapsedSeconds() * 1000.0; }
 	int64_t ElapsedNanos() const;
 private:
 	Instant();
@@ -42,4 +48,20 @@ private:
 #ifndef _WIN32
 	int64_t nsecs_;
 #endif
+};
+
+class TimeCollector {
+public:
+	TimeCollector(double *target, bool enable) : target_(enable ? target : nullptr) {
+		if (enable)
+			startTime_ = time_now_d();
+	}
+	~TimeCollector() {
+		if (target_) {
+			*target_ += time_now_d() - startTime_;
+		}
+	}
+private:
+	double startTime_;
+	double *target_;
 };

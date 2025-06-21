@@ -100,13 +100,26 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 
+	if (info.flags & VulkanInitFlags::DISABLE_IMPLICIT_LAYERS) {
+		// https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDebugging.md
+#if PPSSPP_PLATFORM(WINDOWS)
+#if !PPSSPP_PLATFORM(UWP)
+		// Windows uses _putenv_s
+		_putenv_s("VK_LOADER_LAYERS_DISABLE", "~implicit~");
+#endif
+#else
+		// POSIX: use setenv
+		setenv("VK_LOADER_LAYERS_DISABLE", "~implicit~", 1);  // overwrite = 1
+#endif
+	}
+
 	// Check which Vulkan version we should request.
 	// Our code is fine with any version from 1.0 to 1.2, we don't know about higher versions.
 	vulkanInstanceApiVersion_ = VK_API_VERSION_1_0;
 	if (vkEnumerateInstanceVersion) {
 		vkEnumerateInstanceVersion(&vulkanInstanceApiVersion_);
 		vulkanInstanceApiVersion_ &= 0xFFFFF000;  // Remove patch version.
-		vulkanInstanceApiVersion_ = std::min(VK_API_VERSION_1_3, vulkanInstanceApiVersion_);
+		vulkanInstanceApiVersion_ = std::min(VK_API_VERSION_1_4, vulkanInstanceApiVersion_);
 		std::string versionString = FormatAPIVersion(vulkanInstanceApiVersion_);
 		INFO_LOG(Log::G3D, "Detected Vulkan API version: %s", versionString.c_str());
 	}
@@ -158,7 +171,7 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 #endif
 #endif
 
-	if ((flags_ & VULKAN_FLAG_VALIDATE) && g_Config.sCustomDriver.empty()) {
+	if ((flags_ & VulkanInitFlags::VALIDATE) && g_Config.sCustomDriver.empty()) {
 		if (IsInstanceExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
 			// Enable the validation layers
 			for (size_t i = 0; i < ARRAY_SIZE(validationLayers); i++) {
@@ -170,17 +183,16 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 			INFO_LOG(Log::G3D, "Vulkan debug_utils validation enabled.");
 		} else {
 			ERROR_LOG(Log::G3D, "Validation layer extension not available - not enabling Vulkan validation.");
-			flags_ &= ~VULKAN_FLAG_VALIDATE;
+			flags_ &= ~VulkanInitFlags::VALIDATE;
 		}
 	}
 
-	// Temporary hack for libretro. For some reason, when we try to load the functions from this extension,
-	// we get null pointers when running libretro. Quite strange.
-#if !defined(__LIBRETRO__)
+	// Uncomment to test GPU backend fallback
+	// abort();
+
 	if (EnableInstanceExtension(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, VK_API_VERSION_1_1)) {
 		extensionsLookup_.KHR_get_physical_device_properties2 = true;
 	}
-#endif
 
 	if (EnableInstanceExtension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME, 0)) {
 		extensionsLookup_.EXT_swapchain_colorspace = true;
@@ -513,15 +525,15 @@ bool VulkanContext::CheckLayers(const std::vector<LayerProperties> &layer_props,
 	return true;
 }
 
-int VulkanContext::GetPhysicalDeviceByName(const std::string &name) {
+int VulkanContext::GetPhysicalDeviceByName(std::string_view name) const {
 	for (size_t i = 0; i < physical_devices_.size(); i++) {
-		if (physicalDeviceProperties_[i].properties.deviceName == name)
+		if (equals(physicalDeviceProperties_[i].properties.deviceName, name))
 			return (int)i;
 	}
 	return -1;
 }
 
-int VulkanContext::GetBestPhysicalDevice() {
+int VulkanContext::GetBestPhysicalDevice() const {
 	// Rules: Prefer discrete over embedded.
 	// Prefer nVidia over Intel.
 
@@ -633,12 +645,12 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 	// This is as good a place as any to do this. Though, we don't use this much anymore after we added
 	// support for VMA.
 	vkGetPhysicalDeviceMemoryProperties(physical_devices_[physical_device_], &memory_properties_);
-	INFO_LOG(Log::G3D, "Memory Types (%d):", memory_properties_.memoryTypeCount);
+	DEBUG_LOG(Log::G3D, "Memory Types (%d):", memory_properties_.memoryTypeCount);
 	for (int i = 0; i < (int)memory_properties_.memoryTypeCount; i++) {
 		// Don't bother printing dummy memory types.
 		if (!memory_properties_.memoryTypes[i].propertyFlags)
 			continue;
-		INFO_LOG(Log::G3D, "  %d: Heap %d; Flags: %s%s%s%s  ", i, memory_properties_.memoryTypes[i].heapIndex,
+		DEBUG_LOG(Log::G3D, "  %d: Heap %d; Flags: %s%s%s%s  ", i, memory_properties_.memoryTypes[i].heapIndex,
 			(memory_properties_.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL " : "",
 			(memory_properties_.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "HOST_VISIBLE " : "",
 			(memory_properties_.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? "HOST_CACHED " : "",
@@ -862,14 +874,10 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 }
 
 VkResult VulkanContext::InitDebugUtilsCallback() {
+	VkDebugUtilsMessengerCreateInfoEXT callback1{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
 	// We're intentionally skipping VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT and
 	// VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT, just too spammy.
-	int bits = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
-		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
-		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-
-	VkDebugUtilsMessengerCreateInfoEXT callback1{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
-	callback1.messageSeverity = bits;
+	callback1.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
 	callback1.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 	callback1.pfnUserCallback = &VulkanDebugUtilsCallback;
 	callback1.pUserData = (void *)&g_LogOptions;
@@ -1293,7 +1301,7 @@ bool VulkanContext::ChooseQueue() {
 			// Okay, take the first one then.
 			swapchainFormat_ = surfFormats_[0].format;
 		}
-		INFO_LOG(Log::G3D, "swapchain_format: %d (/%d)", swapchainFormat_, formatCount);
+		INFO_LOG(Log::G3D, "swapchain_format: %s (%d) (/%d)", VulkanFormatToString(swapchainFormat_), (int)swapchainFormat_, formatCount);
 	}
 
 	vkGetDeviceQueue(device_, graphics_queue_family_index_, 0, &gfx_queue_);
@@ -1323,7 +1331,7 @@ static std::string surface_transforms_to_string(VkSurfaceTransformFlagsKHR trans
 }
 
 bool VulkanContext::InitSwapchain() {
-	_assert_(physical_device_ >= 0 && physical_device_ < physical_devices_.size());
+	_assert_(physical_device_ >= 0 && physical_device_ < (int)physical_devices_.size());
 	if (!surface_) {
 		ERROR_LOG(Log::G3D, "VK: No surface, can't create swapchain");
 		return false;
@@ -1344,7 +1352,7 @@ bool VulkanContext::InitSwapchain() {
 	res = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_devices_[physical_device_], surface_, &presentModeCount, presentModes);
 	_dbg_assert_(res == VK_SUCCESS);
 
-	VkExtent2D currentExtent { surfCapabilities_.currentExtent };
+	VkExtent2D currentExtent{ surfCapabilities_.currentExtent };
 	// https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSurfaceCapabilitiesKHR.html
 	// currentExtent is the current width and height of the surface, or the special value (0xFFFFFFFF, 0xFFFFFFFF) indicating that the surface size will be determined by the extent of a swapchain targeting the surface.
 	if (currentExtent.width == 0xFFFFFFFFu || currentExtent.height == 0xFFFFFFFFu
@@ -1352,7 +1360,7 @@ bool VulkanContext::InitSwapchain() {
 		|| currentExtent.width == 0 || currentExtent.height == 0
 #endif
 		) {
-		_dbg_assert_((bool)cbGetDrawSize_)
+		_dbg_assert_((bool)cbGetDrawSize_);
 		if (cbGetDrawSize_) {
 			currentExtent = cbGetDrawSize_();
 		}
@@ -1380,13 +1388,12 @@ bool VulkanContext::InitSwapchain() {
 		availablePresentModes_.push_back(presentModes[i]);
 	}
 
-	INFO_LOG(Log::G3D, "Supported present modes: %s", modes.c_str());
 	for (size_t i = 0; i < presentModeCount; i++) {
 		bool match = false;
-		match = match || ((flags_ & VULKAN_FLAG_PRESENT_MAILBOX) && presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR);
-		match = match || ((flags_ & VULKAN_FLAG_PRESENT_IMMEDIATE) && presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR);
-		match = match || ((flags_ & VULKAN_FLAG_PRESENT_FIFO_RELAXED) && presentModes[i] == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
-		match = match || ((flags_ & VULKAN_FLAG_PRESENT_FIFO) && presentModes[i] == VK_PRESENT_MODE_FIFO_KHR);
+		match = match || ((flags_ & VulkanInitFlags::PRESENT_MAILBOX) && presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR);
+		match = match || ((flags_ & VulkanInitFlags::PRESENT_IMMEDIATE) && presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR);
+		match = match || ((flags_ & VulkanInitFlags::PRESENT_FIFO_RELAXED) && presentModes[i] == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
+		match = match || ((flags_ & VulkanInitFlags::PRESENT_FIFO) && presentModes[i] == VK_PRESENT_MODE_FIFO_KHR);
 
 		// Default to the first present mode from the list.
 		if (match || swapchainPresentMode == VK_PRESENT_MODE_MAX_ENUM_KHR) {
@@ -1402,14 +1409,13 @@ bool VulkanContext::InitSwapchain() {
 	// queued for display):
 	uint32_t desiredNumberOfSwapChainImages = surfCapabilities_.minImageCount + 1;
 	if ((surfCapabilities_.maxImageCount > 0) &&
-		(desiredNumberOfSwapChainImages > surfCapabilities_.maxImageCount))
-	{
+		(desiredNumberOfSwapChainImages > surfCapabilities_.maxImageCount)) {
 		// Application must settle for fewer images than desired:
 		desiredNumberOfSwapChainImages = surfCapabilities_.maxImageCount;
 	}
 
-	INFO_LOG(Log::G3D, "Chosen present mode: %d (%s). numSwapChainImages: %d/%d",
-		swapchainPresentMode, VulkanPresentModeToString(swapchainPresentMode),
+	INFO_LOG(Log::G3D, "Supported present modes: %s. Chosen present mode: %d (%s). numSwapChainImages: %d (max: %d)",
+		modes.c_str(), swapchainPresentMode, VulkanPresentModeToString(swapchainPresentMode),
 		desiredNumberOfSwapChainImages, surfCapabilities_.maxImageCount);
 
 	// We mostly follow the practices from
@@ -1454,8 +1460,11 @@ bool VulkanContext::InitSwapchain() {
 		preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	}
 
-	std::string preTransformStr = surface_transforms_to_string(preTransform);
-	INFO_LOG(Log::G3D, "Transform supported: %s current: %s chosen: %s", supportedTransforms.c_str(), currentTransform.c_str(), preTransformStr.c_str());
+	// Only log transforms if relevant.
+	if (surfCapabilities_.supportedTransforms != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+		std::string preTransformStr = surface_transforms_to_string(preTransform);
+		INFO_LOG(Log::G3D, "Transform supported: %s current: %s chosen: %s", supportedTransforms.c_str(), currentTransform.c_str(), preTransformStr.c_str());
+	}
 
 	if (physicalDeviceProperties_[physical_device_].properties.vendorID == VULKAN_VENDOR_IMGTEC) {
 		u32 driverVersion = physicalDeviceProperties_[physical_device_].properties.driverVersion;
@@ -1491,16 +1500,10 @@ bool VulkanContext::InitSwapchain() {
 
 	presentMode_ = swapchainPresentMode;
 
-	// Don't ask for TRANSFER_DST for the swapchain image, we don't use that.
-	// if (surfCapabilities_.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)
-	//	swap_chain_info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-
-#ifndef ANDROID
-	// We don't support screenshots on Android
-	// Add more usage flags if they're supported.
-	if (surfCapabilities_.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+	// We don't support screenshots on Android if TRANSFER_SRC usage flag is not supported.
+	if (surfCapabilities_.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
 		swap_chain_info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-#endif
+	}
 
 	swap_chain_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	swap_chain_info.queueFamilyIndexCount = 0;
@@ -1518,7 +1521,7 @@ bool VulkanContext::InitSwapchain() {
 		ERROR_LOG(Log::G3D, "vkCreateSwapchainKHR failed!");
 		return false;
 	}
-	INFO_LOG(Log::G3D, "Created swapchain: %dx%d", swap_chain_info.imageExtent.width, swap_chain_info.imageExtent.height);
+	INFO_LOG(Log::G3D, "Created swapchain: %dx%d %s", swap_chain_info.imageExtent.width, swap_chain_info.imageExtent.height, (surfCapabilities_.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ? "(TRANSFER_SRC_BIT supported)" : "");
 	return true;
 }
 

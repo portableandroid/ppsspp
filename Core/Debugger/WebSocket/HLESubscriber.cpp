@@ -18,6 +18,7 @@
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
 #include "Core/Core.h"
+#include "Core/System.h"
 #include "Core/Debugger/DisassemblyManager.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/Debugger/WebSocket/HLESubscriber.h"
@@ -100,7 +101,7 @@ void WebSocketHLEThreadList(DebuggerRequest &req) {
 }
 
 static bool ThreadInfoForStatus(DebuggerRequest &req, DebugThreadInfo *result) {
-	if (!PSP_IsInited()) {
+	if (PSP_GetBootState() != BootState::Complete) {
 		req.Fail("CPU not active");
 		return false;
 	}
@@ -208,7 +209,7 @@ void WebSocketHLEFuncList(DebuggerRequest &req) {
 	if (!g_symbolMap)
 		return req.Fail("CPU not active");
 
-	auto functions = g_symbolMap->GetAllSymbols(ST_FUNCTION);
+	auto functions = g_symbolMap->GetAllActiveSymbols(ST_FUNCTION);
 
 	JsonWriter &json = req.Respond();
 	json.pushArray("functions");
@@ -297,8 +298,7 @@ void WebSocketHLEFuncAdd(DebuggerRequest &req) {
 	}
 
 	// Clear cache for branch lines and such.
-	DisassemblyManager manager;
-	manager.clear();
+	g_disassemblyManager.clear();
 
 	JsonWriter &json = req.Respond();
 	json.writeUint("address", addr);
@@ -354,8 +354,7 @@ void WebSocketHLEFuncRemove(DebuggerRequest &req) {
 	}
 
 	// Clear cache for branch lines and such.
-	DisassemblyManager manager;
-	manager.clear();
+	g_disassemblyManager.clear();
 
 	JsonWriter &json = req.Respond();
 	json.writeUint("address", funcBegin);
@@ -392,8 +391,7 @@ static u32 RemoveFuncSymbolsInRange(u32 addr, u32 size) {
 		}
 
 		// Clear cache for branch lines and such.
-		DisassemblyManager manager;
-		manager.clear();
+		g_disassemblyManager.clear();
 	}
 	return counter;
 }
@@ -592,9 +590,8 @@ void WebSocketHLEBacktrace(DebuggerRequest &req) {
 		json.writeUint("sp", f.sp);
 		json.writeUint("stackSize", f.stackSize);
 
-		DisassemblyManager manager;
 		DisassemblyLineInfo line;
-		manager.getLine(manager.getStartAddress(f.pc), true, line, cpuDebug);
+		g_disassemblyManager.getLine(g_disassemblyManager.getStartAddress(f.pc), true, line, cpuDebug);
 		json.writeString("code", line.name + " " + line.params);
 
 		json.pop();

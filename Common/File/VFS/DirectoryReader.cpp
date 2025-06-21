@@ -32,6 +32,11 @@ bool DirectoryReader::GetFileInfo(const char *path, File::FileInfo *info) {
 	return File::GetFileInfo(new_path, info);
 }
 
+bool DirectoryReader::Exists(const char *path) {
+	Path new_path = Path(path).StartsWith(path_) ? Path(path) : path_ / path;
+	return File::Exists(new_path);
+}
+
 class DirectoryReaderFileReference : public VFSFileReference {
 public:
 	Path path;
@@ -92,8 +97,14 @@ size_t DirectoryReader::Read(VFSOpenFile *vfsOpenFile, void *buffer, size_t leng
 
 void DirectoryReader::CloseFile(VFSOpenFile *vfsOpenFile) {
 	DirectoryReaderOpenFile *openFile = (DirectoryReaderOpenFile *)vfsOpenFile;
+	_dbg_assert_(openFile);
+	if (!openFile) {
+		return;
+	}
 	_dbg_assert_(openFile->file != nullptr);
-	fclose(openFile->file);
-	openFile->file = nullptr;
+	if (openFile->file) {
+		fclose(openFile->file);
+		openFile->file = nullptr;
+	}
 	delete openFile;
 }

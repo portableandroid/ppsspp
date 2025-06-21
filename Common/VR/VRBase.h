@@ -51,6 +51,7 @@ enum { ovrMaxNumEyes = 2 };
 typedef union {
 	XrCompositionLayerProjection Projection;
 	XrCompositionLayerCylinderKHR Cylinder;
+	XrCompositionLayerPassthroughFB Passthrough;
 } ovrCompositorLayer_Union;
 
 typedef struct {
@@ -68,11 +69,8 @@ typedef struct {
 	void* ColorSwapChainImage;
 	unsigned int* GLDepthBuffers;
 	unsigned int* GLFrameBuffers;
-	VkFramebuffer* VKFrameBuffers;
-	VkImageView* VKColorImages;
 
 	bool Acquired;
-	XrGraphicsBindingVulkanKHR* VKContext;
 } ovrFramebuffer;
 
 typedef struct {
@@ -115,7 +113,6 @@ typedef struct {
 	uint64_t frameIndex;
 	ovrApp appState;
 	XrTime predictedDisplayTime;
-	XrGraphicsBindingVulkanKHR graphicsBindingVulkan;
 } engine_t;
 
 enum VRPlatformFlag {
@@ -124,14 +121,13 @@ enum VRPlatformFlag {
 	VR_PLATFORM_EXTENSION_INSTANCE,
 	VR_PLATFORM_EXTENSION_PASSTHROUGH,
 	VR_PLATFORM_EXTENSION_PERFORMANCE,
-	VR_PLATFORM_RENDERER_VULKAN,
 	VR_PLATFORM_TRACKING_FLOOR,
 	VR_PLATFORM_MAX
 };
 
 void VR_Init( void* system, const char* name, int version );
 void VR_Destroy( engine_t* engine );
-void VR_EnterVR( engine_t* engine, XrGraphicsBindingVulkanKHR* graphicsBindingVulkan );
+void VR_EnterVR( engine_t* engine );
 void VR_LeaveVR( engine_t* engine );
 
 engine_t* VR_GetEngine( void );

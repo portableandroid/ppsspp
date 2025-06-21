@@ -15,7 +15,7 @@
 	url = https://github.com/Kingcom/armips.git
 [submodule "ext/glslang"]
 	path = ext/glslang
-	url = https://github.com/KhronosGroup/glslang.git
+	url = https://github.com/hrydgard/glslang.git
 [submodule "ext/SPIRV-Cross"]
 	path = ext/SPIRV-Cross
 	url = https://github.com/KhronosGroup/SPIRV-Cross.git
@@ -62,3 +62,6 @@
 [submodule "ios/MoltenVK"]
 	path = ios/MoltenVK
 	url = https://github.com/hrydgard/ppsspp-moltenvk.git
+[submodule "ext/lua"]
+	path = ext/lua
+	url = https://github.com/hrydgard/ppsspp-lua.git

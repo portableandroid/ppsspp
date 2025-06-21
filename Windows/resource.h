@@ -70,7 +70,7 @@
 #define IDC_STEP                        1009
 #define IDC_VERSION                     1010
 #define IDC_MEMVIEW                     1069
-#define IDC_GOTOLR                      1070
+#define IDC_GOTORA                      1070
 #define IDC_GOTOINT                     1071
 #define IDC_MEMSORT                     1073
 #define IDC_SYMBOLS                     1097
@@ -169,7 +169,6 @@
 #define ID_FILE_QUICKLOADSTATE_HC        40037
 #define ID_OPTIONS_CONTROLS              40038
 #define ID_DEBUG_BREAKONLOAD             40039
-#define ID_DEBUG_DUMPNEXTFRAME           40040
 #define ID_OPTIONS_FRAMESKIP             40044
 #define IDC_MEMCHECK                     40045
 #define ID_FILE_MEMSTICK                 40046
@@ -190,6 +189,7 @@
 #define ID_HELP_OPENFORUM                40064
 #define ID_OPTIONS_VSYNC                 40065
 #define ID_DEBUG_TAKESCREENSHOT          40066
+#define ID_DEBUG_SAVEFRAMEDUMP           40062
 #define ID_DEBUG_RESTARTGRAPHICS         40070
 #define ID_OPTIONS_TEXTUREFILTERING_AUTO 40067
 #define ID_OPTIONS_NEARESTFILTERING      40068
@@ -210,7 +210,6 @@
 #define ID_OPTIONS_FRAMESKIP_7           40086
 #define ID_OPTIONS_FRAMESKIP_8           40087
 #define ID_OPTIONS_FRAMESKIP_AUTO        40088
-#define ID_OPTIONS_FRAMESKIPDUMMY        40089
 #define ID_OPTIONS_RESOLUTIONDUMMY       40090
 #define ID_DISASM_ASSEMBLE               40091
 #define ID_DISASM_ADDNEWBREAKPOINT       40092
@@ -273,7 +272,6 @@
 #define ID_DEBUG_SAVESYMFILE             40151
 #define ID_OPTIONS_BUFLINEARFILTER       40152
 #define ID_OPTIONS_BUFNEARESTFILTER      40153
-#define ID_OPTIONS_DIRECT3D9             40154
 #define ID_OPTIONS_OPENGL                40155
 #define ID_EMULATION_ROTATION_H          40156
 #define ID_EMULATION_ROTATION_V          40157

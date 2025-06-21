@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "Common/TimeUtil.h"
+#include "Common/Data/Random/Rng.h"
 #include "Common/Log.h"
 
 #ifdef HAVE_LIBNX
@@ -25,7 +26,7 @@
 
 // for _mm_pause
 #if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
-#include <immintrin.h>
+#include <emmintrin.h>
 #endif
 
 #include <ctime>
@@ -51,6 +52,7 @@ void TimeInit() {
 	QpcPerSecond = frequency.QuadPart;
 	frequencyMult = 1.0 / static_cast<double>(frequency.QuadPart);
 
+	// The timer will be automatically deleted on process destruction. Don't need to CloseHandle.
 	Timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
 #if !PPSSPP_PLATFORM(UWP)
 	TIMECAPS caps;
@@ -251,7 +253,8 @@ double Instant::ElapsedSeconds() const {
 
 #endif
 
-void sleep_ms(int ms) {
+void sleep_ms(int ms, const char *reason) {
+	// INFO_LOG(Log::System, "Sleep %d ms: %s", ms, reason);
 #ifdef _WIN32
 	Sleep(ms);
 #elif defined(HAVE_LIBNX)
@@ -263,11 +266,13 @@ void sleep_ms(int ms) {
 #endif
 }
 
-// Precise Windows sleep function from: https://github.com/blat-blatnik/Snippets/blob/main/precise_sleep.c
-// Described in: https://blog.bearcats.nl/perfect-sleep-function/
-
 void sleep_precise(double seconds) {
+	if (seconds <= 0.0) {
+		return;
+	}
 #ifdef _WIN32
+	// Precise Windows sleep function from: https://github.com/blat-blatnik/Snippets/blob/main/precise_sleep.c
+	// Described in: https://blog.bearcats.nl/perfect-sleep-function/
 	LARGE_INTEGER qpc;
 	QueryPerformanceCounter(&qpc);
 	INT64 targetQpc = (INT64)(qpc.QuadPart + seconds * QpcPerSecond);
@@ -284,7 +289,10 @@ void sleep_precise(double seconds) {
 			LARGE_INTEGER due;
 			due.QuadPart = -(sleepTicks > maxTicks ? maxTicks : sleepTicks);
 			// Note: SetWaitableTimerEx is not available on Vista.
-			SetWaitableTimer(Timer, &due, 0, NULL, NULL, NULL);
+			if (!SetWaitableTimer(Timer, &due, 0, NULL, NULL, FALSE)) {
+				_dbg_assert_(false);
+				break;
+			}
 			WaitForSingleObject(Timer, INFINITE);
 			QueryPerformanceCounter(&qpc);
 		}
@@ -301,14 +309,13 @@ void sleep_precise(double seconds) {
 		YieldProcessor();
 		QueryPerformanceCounter(&qpc);
 	}
-#else
-#if defined(HAVE_LIBNX)
+	// On other platforms, we just do a conversion with more input precision than in sleep_ms which is restricted to whole milliseconds.
+#elif defined(HAVE_LIBNX)
 	svcSleepThread((int64_t)(seconds * 1000000000.0));
 #elif defined(__EMSCRIPTEN__)
 	emscripten_sleep(seconds * 1000.0);
 #else
 	usleep(seconds * 1000000.0);
-#endif
 #endif
 }
 
@@ -335,4 +342,12 @@ void GetCurrentTimeFormatted(char formattedTime[13]) {
 
 	// Now tack on the milliseconds
 	snprintf(formattedTime, 11, "%s:%03u", tmp, milliseconds % 1000);
+}
+
+// We don't even bother synchronizing this, it's fine if threads stomp a bit.
+static GMRng g_sleepRandom;
+
+void sleep_random(double minSeconds, double maxSeconds) {
+	const double waitSeconds = minSeconds + (maxSeconds - minSeconds) * g_sleepRandom.F();
+	sleep_precise(waitSeconds);
 }

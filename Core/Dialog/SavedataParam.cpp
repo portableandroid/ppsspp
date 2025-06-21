@@ -19,7 +19,6 @@
 #include <memory>
 #include "Common/Log.h"
 #include "Common/Data/Text/I18n.h"
-#include "Common/Data/Format/ZIMLoad.h"
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/System/OSD.h"
@@ -327,7 +326,7 @@ bool SavedataParam::Delete(SceUtilitySavedataParam* param, int saveId) {
 	}
 
 	// Sanity check, preventing full delete of savedata/ in MGS PW demo (!)
-	if (!strlen(param->gameName) && param->mode != SCE_UTILITY_SAVEDATA_TYPE_LISTALLDELETE) {
+	if (!strnlen(param->gameName, sizeof(param->gameName)) && param->mode != SCE_UTILITY_SAVEDATA_TYPE_LISTALLDELETE) {
 		ERROR_LOG(Log::sceUtility, "Bad param with gameName empty - cannot delete save directory");
 		return false;
 	}
@@ -791,12 +790,11 @@ u32 SavedataParam::LoadCryptedSave(SceUtilitySavedataParam *param, u8 *data, con
 			} else {
 				WARN_LOG_REPORT(Log::sceUtility, "Savedata loading with detected hashmode %d instead of file's %d", decryptMode, prevCryptMode);
 			}
-			if (g_Config.bSavedataUpgrade) {
-				decryptMode = prevCryptMode;
-				auto di = GetI18NCategory(I18NCat::DIALOG);
-				g_OSD.Show(OSDType::MESSAGE_WARNING, di->T("When you save, it will not work on outdated PSP Firmware anymore"), 6.0f);
-				g_OSD.Show(OSDType::MESSAGE_WARNING, di->T("Old savedata detected"), 6.0f);
-			}
+
+			decryptMode = prevCryptMode;
+			auto di = GetI18NCategory(I18NCat::DIALOG);
+			g_OSD.Show(OSDType::MESSAGE_WARNING, di->T("When you save, it will not work on outdated PSP Firmware anymore"), 6.0f);
+			g_OSD.Show(OSDType::MESSAGE_WARNING, di->T("Old savedata detected"), 6.0f);
 		}
 		hasKey = decryptMode > 1;
 	}
@@ -943,28 +941,28 @@ int SavedataParam::EncryptData(unsigned int mode,
 	memset(data, 0, 0x10);
 
 	/* Build the 0x10-byte IV and setup encryption */
-	if (sceSdCreateList_(ctx2, mode, 1, data, cryptkey) < 0)
+	if (sceSdCipherInit(ctx2, mode, 1, data, cryptkey) < 0)
 		return -1;
-	if (sceSdSetIndex_(ctx1, mode) < 0)
+	if (sceSdMacInit(ctx1, mode) < 0)
 		return -2;
-	if (sceSdRemoveValue_(ctx1, data, 0x10) < 0)
+	if (sceSdMacUpdate(ctx1, data, 0x10) < 0)
 		return -3;
-	if (sceSdSetMember_(ctx2, data + 0x10, *alignedLen) < 0)
+	if (sceSdCipherUpdate(ctx2, data + 0x10, *alignedLen) < 0)
 		return -4;
 
 	/* Clear any extra bytes left from the previous steps */
 	memset(data + 0x10 + *dataLen, 0, *alignedLen - *dataLen);
 
 	/* Encrypt the data */
-	if (sceSdRemoveValue_(ctx1, data + 0x10, *alignedLen) < 0)
+	if (sceSdMacUpdate(ctx1, data + 0x10, *alignedLen) < 0)
 		return -5;
 
 	/* Verify encryption */
-	if (sceSdCleanList_(ctx2) < 0)
+	if (sceSdCipherFinal(ctx2) < 0)
 		return -6;
 
 	/* Build the file hash from this PSP */
-	if (sceSdGetLastIndex_(ctx1, hash, cryptkey) < 0)
+	if (sceSdMacFinal(ctx1, hash, cryptkey) < 0)
 		return -7;
 
 	/* Adjust sizes to account for IV */
@@ -987,24 +985,24 @@ int SavedataParam::DecryptData(unsigned int mode, unsigned char *data, int *data
 	*alignedLen -= 0x10;
 
 	/* Perform the magic */
-	if (sceSdSetIndex_(ctx1, mode) < 0)
+	if (sceSdMacInit(ctx1, mode) < 0)
 		return -2;
-	if (sceSdCreateList_(ctx2, mode, 2, data, cryptkey) < 0)
+	if (sceSdCipherInit(ctx2, mode, 2, data, cryptkey) < 0)
 		return -3;
-	if (sceSdRemoveValue_(ctx1, data, 0x10) < 0)
+	if (sceSdMacUpdate(ctx1, data, 0x10) < 0)
 		return -4;
-	if (sceSdRemoveValue_(ctx1, data + 0x10, *alignedLen) < 0)
+	if (sceSdMacUpdate(ctx1, data + 0x10, *alignedLen) < 0)
 		return -5;
-	if (sceSdSetMember_(ctx2, data + 0x10, *alignedLen) < 0)
+	if (sceSdCipherUpdate(ctx2, data + 0x10, *alignedLen) < 0)
 		return -6;
 
 	/* Verify that it decrypted correctly */
-	if (sceSdCleanList_(ctx2) < 0)
+	if (sceSdCipherFinal(ctx2) < 0)
 		return -7;
 
 	if (expectedHash) {
 		u8 hash[16];
-		if (sceSdGetLastIndex_(ctx1, hash, cryptkey) < 0)
+		if (sceSdMacFinal(ctx1, hash, cryptkey) < 0)
 			return -7;
 		if (memcmp(hash, expectedHash, sizeof(hash)) != 0)
 			return -8;
@@ -1079,11 +1077,11 @@ int SavedataParam::BuildHash(uint8_t *output,
 	memset(output, 0, 0x10);
 
 	/* Perform the magic */
-	if (sceSdSetIndex_(ctx1, mode & 0xFF) < 0)
+	if (sceSdMacInit(ctx1, mode & 0xFF) < 0)
 		return -1;
-	if (sceSdRemoveValue_(ctx1, data, alignedLen) < 0)
+	if (sceSdMacUpdate(ctx1, data, alignedLen) < 0)
 		return -2;
-	if (sceSdGetLastIndex_(ctx1, output, cryptkey) < 0)
+	if (sceSdMacFinal(ctx1, output, cryptkey) < 0)
 	{
 		// Got here since Kirk CMD5 missing, return random value;
 		memset(output,0x1,0x10);
@@ -1119,17 +1117,15 @@ inline std::string FmtPspTime(const ScePspDateTime &dt) {
 	return StringFromFormat("%04d-%02d-%02d %02d:%02d:%02d.%06d", dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond);
 }
 
-int SavedataParam::GetSizes(SceUtilitySavedataParam *param)
-{
+int SavedataParam::GetSizes(SceUtilitySavedataParam *param) {
 	if (!param) {
 		return SCE_UTILITY_SAVEDATA_ERROR_SIZES_NO_DATA;
 	}
 
 	int ret = 0;
-
 	if (param->msFree.IsValid())
 	{
-		const u64 freeBytes = MemoryStick_FreeSpace();
+		const u64 freeBytes = MemoryStick_FreeSpace(GetGameName(param));
 		param->msFree->clusterSize = (u32)MemoryStick_SectorSize();
 		param->msFree->freeClusters = (u32)(freeBytes / MemoryStick_SectorSize());
 		param->msFree->freeSpaceKB = (u32)(freeBytes / 0x400);
@@ -1230,6 +1226,8 @@ bool SavedataParam::GetList(SceUtilitySavedataParam *param)
 
 		std::vector<PSPFileInfo> validDir;
 		std::vector<PSPFileInfo> sfoFiles;
+
+		// TODO: Here we can filter by prefix - only the savename in param is likely to be a regex.
 		std::vector<PSPFileInfo> allDir = pspFileSystem.GetDirListing(savePath);
 
 		std::string searchString = GetGameName(param) + GetSaveName(param);
@@ -1269,7 +1267,7 @@ bool SavedataParam::GetList(SceUtilitySavedataParam *param)
 		// Save num of folder found
 		param->idList->resultCount = (u32)validDir.size();
 		// Log out the listing.
-		if (GenericLogEnabled(LogLevel::LINFO, Log::sceUtility)) {
+		if (GenericLogEnabled(Log::sceUtility, LogLevel::LINFO)) {
 			INFO_LOG(Log::sceUtility, "LIST (searchstring=%s): %d files (max: %d)", searchString.c_str(), param->idList->resultCount, maxFileCount);
 			for (int i = 0; i < validDir.size(); i++) {
 				INFO_LOG(Log::sceUtility, "%s: mode %08x, ctime: %s, atime: %s, mtime: %s",
@@ -1293,7 +1291,7 @@ int SavedataParam::GetFilesList(SceUtilitySavedataParam *param, u32 requestAddr)
 		return -1;
 	}
 
-	auto &fileList = param->fileList;
+	PSPPointer<SceUtilitySavedataFileListInfo> fileList = param->fileList;
 	if (fileList->secureEntries.IsValid() && fileList->maxSecureEntries > 99) {
 		ERROR_LOG_REPORT(Log::sceUtility, "SavedataParam::GetFilesList(): too many secure entries, %d", fileList->maxSecureEntries);
 		return SCE_UTILITY_SAVEDATA_ERROR_RW_BAD_PARAMS;
@@ -1389,13 +1387,18 @@ int SavedataParam::GetFilesList(SceUtilitySavedataParam *param, u32 requestAddr)
 		entry->name[15] = '\0';
 	}
 
-	if (GenericLogEnabled(LogLevel::LINFO, Log::sceUtility)) {
-		INFO_LOG(Log::sceUtility, "FILES: %d files listed", fileList->resultNumNormalEntries);
-		for (int i = 0; i < (int)fileList->resultNumNormalEntries; i++) {
-			const SceUtilitySavedataFileListEntry &info = fileList->systemEntries[i];
-			INFO_LOG(Log::sceUtility, "%s: mode %08x, ctime: %s, atime: %s, mtime: %s",
-				info.name, info.st_mode, FmtPspTime(info.st_ctime).c_str(), FmtPspTime(info.st_atime).c_str(), FmtPspTime(info.st_mtime).c_str());
+	if (GenericLogEnabled(Log::sceUtility, LogLevel::LINFO)) {
+		INFO_LOG(Log::sceUtility, "FILES: %d files listed (+ %d system, %d secure)", fileList->resultNumNormalEntries, fileList->resultNumSystemEntries, fileList->resultNumSecureEntries);
+		if (fileList->normalEntries.IsValid()) {
+			for (int i = 0; i < (int)fileList->resultNumNormalEntries; i++) {
+				const SceUtilitySavedataFileListEntry &info = fileList->normalEntries[i];
+				INFO_LOG(Log::sceUtility, "%s: mode %08x, ctime: %s, atime: %s, mtime: %s",
+					info.name, info.st_mode, FmtPspTime(info.st_ctime).c_str(), FmtPspTime(info.st_atime).c_str(), FmtPspTime(info.st_mtime).c_str());
+			}
+		} else if (fileList->resultNumNormalEntries > 0) {
+			WARN_LOG(Log::sceUtility, "Invalid normalEntries pointer (%d entries)", fileList->resultNumNormalEntries);
 		}
+		// TODO: Log system and secure entries?
 	}
 
 	NotifyMemInfo(MemBlockFlags::WRITE, fileList.ptr, sizeof(SceUtilitySavedataFileListInfo), "SavedataGetFilesList");
@@ -1419,7 +1422,7 @@ bool SavedataParam::GetSize(SceUtilitySavedataParam *param) {
 
 	if (param->sizeInfo.IsValid()) {
 		auto listing = pspFileSystem.GetDirListing(saveDir, &exists);
-		const u64 freeBytes = MemoryStick_FreeSpace();
+		const u64 freeBytes = MemoryStick_FreeSpace(GetGameName(param));
 
 		s64 overwriteBytes = 0;
 		s64 writeBytes = 0;
@@ -1511,6 +1514,11 @@ int SavedataParam::SetPspParam(SceUtilitySavedataParam *param)
 		return 0;
 	}
 
+	std::string gameName = GetGameName(param);
+	if (!gameName.empty()) {
+		MemoryStick_NotifyGameName(gameName);
+	}
+
 	if (param->mode == SCE_UTILITY_SAVEDATA_TYPE_LISTALLDELETE) {
 		Clear();
 		int realCount = 0;
@@ -1553,12 +1561,16 @@ int SavedataParam::SetPspParam(SceUtilitySavedataParam *param)
 			
 			// get and stock file info for each file
 			int realCount = 0;
+
+			// TODO: Filter away non-directories directly?
+			std::vector<PSPFileInfo> allSaves = pspFileSystem.GetDirListing(savePath);
+
+			std::string gameName = GetGameName(param);
+
 			for (int i = 0; i < saveDataListCount; i++) {
 				// "<>" means saveName can be anything...
 				if (strncmp(saveNameListData[i], "<>", ARRAY_SIZE(saveNameListData[i])) == 0) {
-					// TODO:Maybe we need a way to reorder the files?
-					auto allSaves = pspFileSystem.GetDirListing(savePath);
-					std::string gameName = GetGameName(param);
+					// TODO: Maybe we need a way to reorder the files?
 					for (auto it = allSaves.begin(); it != allSaves.end(); ++it) {
 						if (it->name.compare(0, gameName.length(), gameName) == 0) {
 							std::string saveName = it->name.substr(gameName.length());
@@ -1569,7 +1581,6 @@ int SavedataParam::SetPspParam(SceUtilitySavedataParam *param)
 							std::string fileDataPath = savePath + it->name;
 							if (it->exists) {
 								SetFileInfo(realCount, *it, saveName);
-								DEBUG_LOG(Log::sceUtility, "%s Exist", fileDataPath.c_str());
 								++realCount;
 							} else {
 								if (listEmptyFile) {
@@ -1585,16 +1596,33 @@ int SavedataParam::SetPspParam(SceUtilitySavedataParam *param)
 
 				const std::string thisSaveName = FixedToString(saveNameListData[i], ARRAY_SIZE(saveNameListData[i]));
 
-				std::string fileDataDir = savePath + GetGameName(param) + thisSaveName;
-				PSPFileInfo info = GetSaveInfo(fileDataDir);
-				if (info.exists) {
-					SetFileInfo(realCount, info, thisSaveName);
-					INFO_LOG(Log::sceUtility, "Save data exists: %s = %s", thisSaveName.c_str(), fileDataDir.c_str());
-					realCount++;
-				} else {
+				const std::string folderName = gameName + thisSaveName;
+
+				// Check if thisSaveName is in the list before processing.
+				// This is hopefully faster than doing file I/O.
+				bool found = false;
+				for (int i = 0; i < allSaves.size(); i++) {
+					if (allSaves[i].name == folderName) {
+						found = true;
+					}
+				}
+
+				const std::string fileDataDir = savePath + gameName + thisSaveName;
+				if (found) {
+					PSPFileInfo info = GetSaveInfo(fileDataDir);
+					if (info.exists) {
+						SetFileInfo(realCount, info, thisSaveName);
+						INFO_LOG(Log::sceUtility, "Save data exists: %s = %s", thisSaveName.c_str(), fileDataDir.c_str());
+						realCount++;
+					} else {
+						found = false;
+					}
+				}
+
+				if (!found) {  // NOTE: May be changed above, can't merge with the expression
 					if (listEmptyFile) {
 						ClearFileInfo(saveDataList[realCount], thisSaveName);
-						INFO_LOG(Log::sceUtility, "Listing missing save data: %s = %s", thisSaveName.c_str(), fileDataDir.c_str());
+						DEBUG_LOG(Log::sceUtility, "Listing missing save data: %s = %s", thisSaveName.c_str(), fileDataDir.c_str());
 						realCount++;
 					} else {
 						INFO_LOG(Log::sceUtility, "Save data not found: %s = %s", thisSaveName.c_str(), fileDataDir.c_str());
@@ -1622,7 +1650,7 @@ int SavedataParam::SetPspParam(SceUtilitySavedataParam *param)
 		} else {
 			if (listEmptyFile) {
 				ClearFileInfo(saveDataList[0], GetSaveName(param));
-				INFO_LOG(Log::sceUtility, "Listing missing save data: %s = %s", GetSaveName(param).c_str(), fileDataDir.c_str());
+				DEBUG_LOG(Log::sceUtility, "Listing missing save data: %s = %s", GetSaveName(param).c_str(), fileDataDir.c_str());
 			} else {
 				INFO_LOG(Log::sceUtility, "Save data not found: %s = %s", GetSaveName(param).c_str(), fileDataDir.c_str());
 			}
@@ -1692,11 +1720,13 @@ void SavedataParam::ClearFileInfo(SaveFileInfo &saveInfo, const std::string &sav
 	}
 
 	if (GetPspParam()->newData.IsValid() && GetPspParam()->newData->buf.IsValid()) {
-		// We have a png to show
+		// We may have a png to show
 		if (!noSaveIcon) {
 			noSaveIcon = new SaveFileInfo();
 			PspUtilitySavedataFileData *newData = GetPspParam()->newData;
-			noSaveIcon->texture = new PPGeImage(newData->buf.ptr, (SceSize)newData->size);
+			if (Memory::IsValidRange(newData->buf.ptr, newData->size)) {
+				noSaveIcon->texture = new PPGeImage(newData->buf.ptr, (SceSize)newData->size);
+			}
 		}
 		saveInfo.texture = noSaveIcon->texture;
 	} else if ((u32)GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_SAVE && GetPspParam()->icon0FileData.buf.IsValid()) {
@@ -1997,7 +2027,7 @@ int SavedataParam::GetSaveCryptMode(const SceUtilitySavedataParam *param, const 
 
 bool SavedataParam::IsInSaveDataList(const std::string &saveName, int count) {
 	for(int i = 0; i < count; ++i) {
-		if(strcmp(saveDataList[i].saveName.c_str(),saveName.c_str()) == 0)
+		if (saveDataList[i].saveName == saveName)
 			return true;
 	}
 	return false;

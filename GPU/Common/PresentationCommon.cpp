@@ -15,11 +15,10 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <cstdint>
-#include <algorithm>
-
 #include "Common/GPU/thin3d.h"
 
 #include "Common/System/Display.h"
@@ -27,6 +26,7 @@
 #include "Common/System/OSD.h"
 #include "Common/File/VFS/VFS.h"
 #include "Common/VR/PPSSPPVR.h"
+#include "Common/Math/geom2d.h"
 #include "Common/Log.h"
 #include "Common/TimeUtil.h"
 #include "Core/Config.h"
@@ -43,6 +43,16 @@ struct Vertex {
 	float u, v;
 	uint32_t rgba;
 };
+
+static bool g_overrideScreenBounds;
+static Bounds g_screenBounds;
+
+void SetOverrideScreenFrame(const Bounds *bounds) {
+	g_overrideScreenBounds = bounds != nullptr;
+	if (bounds) {
+		g_screenBounds = *bounds;
+	}
+}
 
 FRect GetScreenFrame(float pixelWidth, float pixelHeight) {
 	FRect rc = FRect{
@@ -67,6 +77,15 @@ FRect GetScreenFrame(float pixelWidth, float pixelHeight) {
 		rc.y += top;
 		rc.h -= (top + bottom);
 	}
+
+	if (g_overrideScreenBounds) {
+		// Set rectangle to match central node. Here we ignore bIgnoreScreenInsets.
+		rc.x = g_screenBounds.x;
+		rc.y = g_screenBounds.y;
+		rc.w = g_screenBounds.w;
+		rc.h = g_screenBounds.h;
+	}
+
 	return rc;
 }
 
@@ -221,6 +240,7 @@ void PresentationCommon::CalculatePostShaderUniforms(int bufferWidth, int buffer
 	uniforms->timeDelta[2] = time[2] - previousUniforms_.time[2];
 	uniforms->timeDelta[3] = time[3] != previousUniforms_.time[3] ? 1.0f : 0.0f;
 	uniforms->video = hasVideo_ ? 1.0f : 0.0f;
+	uniforms->vr = IsVREnabled() && IsBigScreenVRMode() ? 1.0f : 0.0f;
 
 	// The shader translator tacks this onto our shaders, if we don't set it they render garbage.
 	uniforms->gl_HalfPixel[0] = u_pixel_delta * 0.5f;
@@ -348,6 +368,7 @@ bool PresentationCommon::CompilePostShader(const ShaderInfo *shaderInfo, Draw::P
 		{ "u_timeDelta", 4, 4, UniformType::FLOAT4, offsetof(PostShaderUniforms, timeDelta) },
 		{ "u_setting", 5, 5, UniformType::FLOAT4, offsetof(PostShaderUniforms, setting) },
 		{ "u_video", 6, 6, UniformType::FLOAT1, offsetof(PostShaderUniforms, video) },
+		{ "u_vr", 7, 7, UniformType::FLOAT1, offsetof(PostShaderUniforms, vr) },
 	} };
 
 	Draw::Pipeline *pipeline = CreatePipeline({ vs, fs }, true, &postShaderDesc);
@@ -474,7 +495,7 @@ Draw::Pipeline *PresentationCommon::CreatePipeline(std::vector<Draw::ShaderModul
 	Semantic pos = SEM_POSITION;
 	Semantic tc = SEM_TEXCOORD0;
 	// Shader translation marks these both as "TEXCOORDs" on HLSL...
-	if (postShader && (lang_ == HLSL_D3D11 || lang_ == HLSL_D3D9)) {
+	if (postShader && lang_ == HLSL_D3D11) {
 		pos = SEM_TEXCOORD0;
 		tc = SEM_TEXCOORD1;
 	}
@@ -507,7 +528,7 @@ Draw::Pipeline *PresentationCommon::CreatePipeline(std::vector<Draw::ShaderModul
 
 void PresentationCommon::CreateDeviceObjects() {
 	using namespace Draw;
-	_assert_(vdata_ == nullptr);
+	_dbg_assert_(vdata_ == nullptr);
 
 	// TODO: Could probably just switch to DrawUP, it's supported well by all backends now.
 	vdata_ = draw_->CreateBuffer(sizeof(Vertex) * 12, BufferUsageFlag::DYNAMIC | BufferUsageFlag::VERTEXDATA);
@@ -611,15 +632,15 @@ bool PresentationCommon::BindSource(int binding, bool bindStereo) {
 	} else if (srcFramebuffer_) {
 		if (bindStereo) {
 			if (srcFramebuffer_->Layers() > 1) {
-				draw_->BindFramebufferAsTexture(srcFramebuffer_, binding, Draw::FB_COLOR_BIT, Draw::ALL_LAYERS);
+				draw_->BindFramebufferAsTexture(srcFramebuffer_, binding, Draw::Aspect::COLOR_BIT, Draw::ALL_LAYERS);
 				return true;
 			} else {
 				// Single layer. This might be from a post shader and those don't yet support stereo.
-				draw_->BindFramebufferAsTexture(srcFramebuffer_, binding, Draw::FB_COLOR_BIT, 0);
+				draw_->BindFramebufferAsTexture(srcFramebuffer_, binding, Draw::Aspect::COLOR_BIT, 0);
 				return false;
 			}
 		} else {
-			draw_->BindFramebufferAsTexture(srcFramebuffer_, binding, Draw::FB_COLOR_BIT, 0);
+			draw_->BindFramebufferAsTexture(srcFramebuffer_, binding, Draw::Aspect::COLOR_BIT, 0);
 			return false;
 		}
 	} else {
@@ -661,12 +682,6 @@ void PresentationCommon::CopyToOutput(OutputFlags flags, int uvRotation, float u
 	}
 	FRect rc;
 	CalculateDisplayOutputRect(&rc, 480.0f, 272.0f, frame, uvRotation);
-
-	if (GetGPUBackend() == GPUBackend::DIRECT3D9) {
-		rc.x -= 0.5f;
-		// This is plus because the top is larger y.
-		rc.y += 0.5f;
-	}
 
 	// To make buffer updates easier, we use one array of verts.
 	int postVertsOffset = (int)sizeof(Vertex) * 4;
@@ -765,13 +780,13 @@ void PresentationCommon::CopyToOutput(OutputFlags flags, int uvRotation, float u
 	PostShaderUniforms uniforms;
 	const auto performShaderPass = [&](const ShaderInfo *shaderInfo, Draw::Framebuffer *postShaderFramebuffer, Draw::Pipeline *postShaderPipeline, int vertsOffset) {
 		if (postShaderOutput) {
-			draw_->BindFramebufferAsTexture(postShaderOutput, 0, Draw::FB_COLOR_BIT, 0);
+			draw_->BindFramebufferAsTexture(postShaderOutput, 0, Draw::Aspect::COLOR_BIT, 0);
 		} else {
 			BindSource(0, false);
 		}
 		BindSource(1, false);
 		if (shaderInfo->usePreviousFrame)
-			draw_->BindFramebufferAsTexture(previousFramebuffer, 2, Draw::FB_COLOR_BIT, 0);
+			draw_->BindFramebufferAsTexture(previousFramebuffer, 2, Draw::Aspect::COLOR_BIT, 0);
 
 		int nextWidth, nextHeight;
 		draw_->GetFramebufferDimensions(postShaderFramebuffer, &nextWidth, &nextHeight);
@@ -879,7 +894,7 @@ void PresentationCommon::CopyToOutput(OutputFlags flags, int uvRotation, float u
 
 		draw_->BindPipeline(pipeline);
 		if (postShaderOutput) {
-			draw_->BindFramebufferAsTexture(postShaderOutput, 0, Draw::FB_COLOR_BIT, 0);
+			draw_->BindFramebufferAsTexture(postShaderOutput, 0, Draw::Aspect::COLOR_BIT, 0);
 		} else {
 			BindSource(0, false);
 		}

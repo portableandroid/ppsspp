@@ -62,6 +62,9 @@ void UIScreen::DoRecreateViews() {
 			root_->SubviewFocused(focused);
 		}
 	}
+
+	// NOTE: We also wipe the requester token. It's possible that views were created with the old token, so any pending requests from them must be invalidated.
+	WipeRequesterToken();
 }
 
 void UIScreen::touch(const TouchInput &touch) {
@@ -190,9 +193,9 @@ void UIScreen::deviceLost() {
 		root_->DeviceLost();
 }
 
-void UIScreen::deviceRestored() {
+void UIScreen::deviceRestored(Draw::DrawContext *draw) {
 	if (root_)
-		root_->DeviceRestored(screenManager()->getDrawContext());
+		root_->DeviceRestored(draw);
 }
 
 void UIScreen::SetupViewport() {
@@ -430,11 +433,15 @@ void PopupScreen::CreateViews() {
 	box_->SetSpacing(0.0f);
 
 	if (HasTitleBar()) {
-		View* title = new PopupHeader(title_);
+		View *title = new PopupHeader(title_);
 		box_->Add(title);
 	}
 
 	CreatePopupContents(box_);
+	root_->Recurse([](View *view) {
+		view->SetPopupStyle(true);
+	});
+
 	root_->SetDefaultFocusView(box_);
 	if (ShowButtons() && !button1_.empty()) {
 		// And the two buttons at the bottom.

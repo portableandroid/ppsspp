@@ -105,13 +105,15 @@ struct CompatFlags {
 	bool Fontltn12Hack;
 	bool LoadCLUTFromCurrentFrameOnly;
 	bool ForceUMDReadSpeed;
-	bool AllowDelayedReadbacks;
 	bool KernelGetSystemTimeLowEatMoreCycles;
 	bool TacticsOgreEliminateDebugReadback;
 	bool FramebufferAllowLargeVerticalOffset;
 	bool DisableMemcpySlicing;
 	bool ForceEnableGPUReadback;
 	bool UseFFMPEGFindStreamInfo;
+	bool SoftwareRasterDepth;
+	bool DisableHLESceFont;
+	bool ForceHLEPsmf;
 };
 
 struct VRCompat {
@@ -139,6 +141,10 @@ public:
 
 	void Load(const std::string &gameID);
 
+	const std::string &GetActiveFlagsString() const {
+		return activeList_;
+	}
+
 private:
 	void Clear();
 	void CheckSettings(IniFile &iniFile, const std::string &gameID);
@@ -150,4 +156,5 @@ private:
 	CompatFlags flags_{};
 	VRCompat vrCompat_{};
 	std::set<std::string> ignored_;
+	std::string activeList_;
 };

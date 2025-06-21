@@ -21,22 +21,16 @@
 #include "Common/Profiler/Profiler.h"
 
 #include "Common/Log.h"
+#include "Common/TimeUtil.h"
 #include "Common/File/FileUtil.h"
 #include "Common/GraphicsContext.h"
-#include "Common/Serialize/Serializer.h"
-#include "Common/TimeUtil.h"
-#include "Common/Thread/ThreadUtil.h"
 
 #include "Core/Config.h"
-#include "Core/Debugger/Breakpoints.h"
-#include "Core/MemMapHelpers.h"
 #include "Core/Reporting.h"
 #include "Core/System.h"
 #include "Core/ELF/ParamSFO.h"
 
 #include "GPU/GPUState.h"
-#include "GPU/ge_constants.h"
-#include "GPU/GeDisasm.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Vulkan/ShaderManagerVulkan.h"
 #include "GPU/Vulkan/GPU_Vulkan.h"
@@ -48,8 +42,9 @@
 
 GPU_Vulkan::GPU_Vulkan(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	: GPUCommonHW(gfxCtx, draw), drawEngine_(draw) {
+	_assert_(draw);
+
 	gstate_c.SetUseFlags(CheckGPUFeatures());
-	drawEngine_.InitDeviceObjects();
 
 	VulkanContext *vulkan = (VulkanContext *)gfxCtx->GetAPIContext();
 
@@ -64,6 +59,7 @@ GPU_Vulkan::GPU_Vulkan(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	drawEngineCommon_ = &drawEngine_;
 	shaderManager_ = shaderManagerVulkan_;
 
+	drawEngine_.SetGPUCommon(this);
 	drawEngine_.SetTextureCache(textureCacheVulkan_);
 	drawEngine_.SetFramebufferManager(framebufferManagerVulkan_);
 	drawEngine_.SetShaderManager(shaderManagerVulkan_);
@@ -72,12 +68,9 @@ GPU_Vulkan::GPU_Vulkan(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	framebufferManagerVulkan_->SetTextureCache(textureCacheVulkan_);
 	framebufferManagerVulkan_->SetDrawEngine(&drawEngine_);
 	framebufferManagerVulkan_->SetShaderManager(shaderManagerVulkan_);
-	framebufferManagerVulkan_->Init(msaaLevel_);
 	textureCacheVulkan_->SetFramebufferManager(framebufferManagerVulkan_);
 	textureCacheVulkan_->SetShaderManager(shaderManagerVulkan_);
 	textureCacheVulkan_->SetDrawEngine(&drawEngine_);
-
-	InitDeviceObjects();
 
 	// Sanity check gstate
 	if ((int *)&gstate.transferstart - (int *)&gstate != 0xEA) {
@@ -88,6 +81,8 @@ GPU_Vulkan::GPU_Vulkan(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 
 	textureCache_->NotifyConfigChanged();
 
+	drawEngine_.InitDeviceObjects();  // Creates important things like the pipeline layout. Required for loading the disk cache.
+
 	// Load shader cache.
 	std::string discID = g_paramSFO.GetDiscID();
 	if (discID.size()) {
@@ -95,6 +90,13 @@ GPU_Vulkan::GPU_Vulkan(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 		shaderCachePath_ = GetSysDirectory(DIRECTORY_APP_CACHE) / (discID + ".vkshadercache");
 		LoadCache(shaderCachePath_);
 	}
+
+	InitDeviceObjects();
+}
+
+void GPU_Vulkan::FinishInitOnMainThread() {
+	// This can end up stopping/starting the vulkan render manager.
+	framebufferManagerVulkan_->Init(msaaLevel_);
 }
 
 void GPU_Vulkan::LoadCache(const Path &filename) {
@@ -103,7 +105,6 @@ void GPU_Vulkan::LoadCache(const Path &filename) {
 		return;
 	}
 
-	PSP_SetLoading("Loading shader cache...");
 	// Actually precompiled by IsReady() since we're single-threaded.
 	FILE *f = File::OpenCFile(filename, "rb");
 	if (!f)
@@ -112,7 +113,7 @@ void GPU_Vulkan::LoadCache(const Path &filename) {
 	// First compile shaders to SPIR-V, then load the pipeline cache and recreate the pipelines.
 	// It's when recreating the pipelines that the pipeline cache is useful - in the ideal case,
 	// it can just memcpy the finished shader binaries out of the pipeline cache file.
-	bool result = shaderManagerVulkan_->LoadCacheFlags(f, &drawEngine_);
+	bool result = ShaderManagerVulkan::LoadCacheFlags(f, &drawEngine_);
 	if (!result) {
 		WARN_LOG(Log::G3D, "ShaderManagerVulkan failed to load cache header.");
 	}
@@ -132,6 +133,14 @@ void GPU_Vulkan::LoadCache(const Path &filename) {
 		result = pipelineManager_->LoadPipelineCache(f, false, shaderManagerVulkan_, draw_, drawEngine_.GetPipelineLayout(), msaaLevel_);
 	}
 	fclose(f);
+
+	// Now, since we're on the loader thread, we can just block here until all pipelines are actually created.
+	// This makes it so that the on-screen spinner keeps spinning until we are done.
+	double start = time_now_d();
+	VulkanRenderManager *rm = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
+	int maxTasksSeen = rm->WaitForPipelines();
+	double seconds = time_now_d() - start;
+	INFO_LOG(Log::G3D, "Waited %0.1fms for at least %d pipeline tasks to finish compiling.", seconds * 1000.0, maxTasksSeen);
 
 	if (!result) {
 		WARN_LOG(Log::G3D, "Incompatible Vulkan pipeline cache - rebuilding.");
@@ -447,7 +456,7 @@ void GPU_Vulkan::DeviceLost() {
 }
 
 void GPU_Vulkan::DeviceRestore(Draw::DrawContext *draw) {
-	GPUCommonHW::DeviceRestore(draw);
+	GPUCommonHW::DeviceRestore(draw);  // this updates draw_.
 
 	VulkanContext *vulkan = (VulkanContext *)draw_->GetNativeObject(Draw::NativeObject::CONTEXT);
 	pipelineManager_->DeviceRestore(vulkan);

@@ -1,7 +1,3 @@
-// SDL/EGL implementation of the framework.
-// This is quite messy due to platform-specific implementations and #ifdef's.
-// If your platform is not supported, it is suggested to use Qt instead.
-
 #include <cstdlib>
 #include <unistd.h>
 #include <pwd.h>
@@ -10,9 +6,11 @@
 #if PPSSPP_PLATFORM(MAC)
 #include "SDL2/SDL.h"
 #include "SDL2/SDL_syswm.h"
+#include "SDL2/SDL_mouse.h"
 #else
 #include "SDL.h"
 #include "SDL_syswm.h"
+#include "SDL_mouse.h"
 #endif
 #include "SDL/SDLJoystick.h"
 SDLJoystick *joystick = NULL;
@@ -28,10 +26,15 @@ SDLJoystick *joystick = NULL;
 #include <thread>
 #include <locale>
 
+#include "ext/portable-file-dialogs/portable-file-dialogs.h"
+
+#include "ext/imgui/imgui.h"
+#include "ext/imgui/imgui_impl_platform.h"
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
 #include "Common/System/Request.h"
 #include "Common/System/NativeApp.h"
+#include "Common/Audio/AudioBackend.h"
 #include "ext/glslang/glslang/Public/ShaderLang.h"
 #include "Common/Data/Format/PNGLoad.h"
 #include "Common/Net/Resolve.h"
@@ -40,6 +43,7 @@ SDLJoystick *joystick = NULL;
 #include "Common/Math/math_util.h"
 #include "Common/GPU/OpenGL/GLRenderManager.h"
 #include "Common/Profiler/Profiler.h"
+#include "Common/Log/LogManager.h"
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 #include <X11/Xlib.h>
@@ -102,7 +106,7 @@ static SDL_AudioSpec g_retFmt;
 
 static bool g_textFocusChanged;
 static bool g_textFocus;
-
+double g_audioStartTime = 0.0;
 
 // Window state to be transferred to the main SDL thread.
 static std::mutex g_mutexWindow;
@@ -131,7 +135,7 @@ int getDisplayNumber(void) {
 }
 
 void sdl_mixaudio_callback(void *userdata, Uint8 *stream, int len) {
-	NativeMix((short *)stream, len / (2 * 2), g_sampleRate);
+	NativeMix((short *)stream, len / (2 * 2), g_sampleRate, userdata);
 }
 
 static SDL_AudioDeviceID audioDev = 0;
@@ -143,7 +147,7 @@ static void InitSDLAudioDevice(const std::string &name = "") {
 	fmt.freq = g_sampleRate;
 	fmt.format = AUDIO_S16;
 	fmt.channels = 2;
-	fmt.samples = 256;
+	fmt.samples = std::max(g_Config.iSDLAudioBufferSize, 128);
 	fmt.callback = &sdl_mixaudio_callback;
 	fmt.userdata = nullptr;
 
@@ -152,19 +156,36 @@ static void InitSDLAudioDevice(const std::string &name = "") {
 		startDevice = g_Config.sAudioDevice;
 	}
 
+	// List available audio devices before trying to open, for debugging purposes.
+	const int deviceCount = SDL_GetNumAudioDevices(0);
+	if (deviceCount > 0) {
+		INFO_LOG(Log::Audio, "Available audio devices:");
+		for (int i = 0; i < deviceCount; i++) {
+			const char *deviceName = SDL_GetAudioDeviceName(i, 0);
+			INFO_LOG(Log::Audio, " * '%s'", deviceName);
+		}
+	} else {
+		INFO_LOG(Log::Audio, "Failed to list audio devices: retval=%d", deviceCount);
+	}
+
 	audioDev = 0;
 	if (!startDevice.empty()) {
+		INFO_LOG(Log::Audio, "Opening audio device: '%s'", startDevice.c_str());
 		audioDev = SDL_OpenAudioDevice(startDevice.c_str(), 0, &fmt, &g_retFmt, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
 		if (audioDev <= 0) {
-			WARN_LOG(Log::Audio, "Failed to open audio device: %s", startDevice.c_str());
+			WARN_LOG(Log::Audio, "Failed to open audio device '%s'", startDevice.c_str());
 		}
 	}
 	if (audioDev <= 0) {
-		INFO_LOG(Log::Audio, "SDL: Trying a different audio device");
+		if (audioDev < 0) {
+			WARN_LOG(Log::Audio, "SDL: Error: '%s'. Trying the default audio device", SDL_GetError());
+		} else {
+			INFO_LOG(Log::Audio, "Opening default audio device");
+		}
 		audioDev = SDL_OpenAudioDevice(nullptr, 0, &fmt, &g_retFmt, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
 	}
 	if (audioDev <= 0) {
-		ERROR_LOG(Log::Audio, "Failed to open audio device: %s", SDL_GetError());
+		ERROR_LOG(Log::Audio, "Failed to open audio device '%s', second try. Giving up.", SDL_GetError());
 	} else {
 		if (g_retFmt.samples != fmt.samples) // Notify, but still use it
 			ERROR_LOG(Log::Audio, "Output audio samples: %d (requested: %d)", g_retFmt.samples, fmt.samples);
@@ -188,24 +209,21 @@ static void StopSDLAudioDevice() {
 }
 
 static void UpdateScreenDPI(SDL_Window *window) {
-	int drawable_width, window_width;
-	SDL_GetWindowSize(window, &window_width, NULL);
+	int drawable_width, window_width, window_height;
+	SDL_GetWindowSize(window, &window_width, &window_height);
 
 	if (g_Config.iGPUBackend == (int)GPUBackend::OPENGL)
 		SDL_GL_GetDrawableSize(window, &drawable_width, NULL);
 	else if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN)
 		SDL_Vulkan_GetDrawableSize(window, &drawable_width, NULL);
-
+	else {
+		// If we add SDL support for more platforms, we'll end up here.
+		g_DesktopDPI = 1.0f;
+		return;
+	}
 	// Round up a little otherwise there would be a gap sometimes
 	// in fractional scaling
 	g_DesktopDPI = ((float) drawable_width + 1.0f) / window_width;
-
-	// Temporary hack
-#if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
-	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
-		g_DesktopDPI = 1.0f;
-	}
-#endif
 }
 
 // Simple implementations of System functions
@@ -225,6 +243,56 @@ void System_ShowKeyboard() {
 
 void System_Vibrate(int length_ms) {
 	// Ignore on PC
+}
+
+AudioBackend *System_CreateAudioBackend() {
+	// Use legacy mechanisms.
+	return nullptr;
+}
+
+static void InitializeFilters(std::vector<std::string> &filters, BrowseFileType type) {
+	switch (type) {
+	case BrowseFileType::BOOTABLE:
+		filters.push_back("All supported file types (*.iso *.cso *.chd *.pbp *.elf *.prx *.zip *.ppdmp)");
+		filters.push_back("*.pbp *.elf *.iso *.cso *.chd *.prx *.zip *.ppdmp");
+		break;
+	case BrowseFileType::INI:
+		filters.push_back("Ini files");
+		filters.push_back("*.ini");
+		break;
+	case BrowseFileType::ZIP:
+		filters.push_back("ZIP files");
+		filters.push_back("*.zip");
+		break;
+	case BrowseFileType::DB:
+		filters.push_back("Cheat db files");
+		filters.push_back("*.db");
+		break;
+	case BrowseFileType::SOUND_EFFECT:
+		filters.push_back("Sound effect files (wav, mp3)");
+		filters.push_back("*.wav *.mp3");
+		break;
+	case BrowseFileType::SYMBOL_MAP:
+		filters.push_back("PPSSPP Symbol Map files (ppmap)");
+		filters.push_back("*.ppmap");
+		break;
+	case BrowseFileType::SYMBOL_MAP_NOCASH:
+		filters.push_back("No$ symbol Map files (sym)");
+		filters.push_back("*.sym");
+		break;
+	case BrowseFileType::ATRAC3:
+		filters.push_back("Atrac3 files (at3)");
+		filters.push_back("*.at3");
+		break;
+	case BrowseFileType::IMAGE:
+		filters.push_back("Pictures (jpg, png)");
+		filters.push_back("*.jpg *.png");
+		break;
+	case BrowseFileType::ANY:
+		break;
+	}
+	filters.push_back("All files (*.*)");
+	filters.push_back("*");
 }
 
 bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) {
@@ -282,6 +350,19 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		DarwinFileSystemServices::presentDirectoryPanel(callback, /* allowFiles = */ true, /* allowDirectories = */ false, fileType);
 		return true;
 	}
+	case SystemRequestType::BROWSE_FOR_IMAGE:
+	{
+		DarwinDirectoryPanelCallback callback = [requestId] (bool success, Path path) {
+			if (success) {
+				g_requestManager.PostSystemSuccess(requestId, path.c_str());
+			} else {
+				g_requestManager.PostSystemFailure(requestId);
+			}
+		};
+		BrowseFileType fileType = BrowseFileType::IMAGE;
+		DarwinFileSystemServices::presentDirectoryPanel(callback, /* allowFiles = */ true, /* allowDirectories = */ false, fileType);
+		return true;
+	}
 	case SystemRequestType::BROWSE_FOR_FOLDER:
 	{
 		DarwinDirectoryPanelCallback callback = [requestId] (bool success, Path path) {
@@ -292,6 +373,58 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 			}
 		};
 		DarwinFileSystemServices::presentDirectoryPanel(callback, /* allowFiles = */ false, /* allowDirectories = */ true);
+		return true;
+	}
+#else
+	case SystemRequestType::BROWSE_FOR_IMAGE:
+	{
+		// TODO: Add non-blocking support.
+		const std::string &title = param1;
+		std::vector<std::string> filters;
+		InitializeFilters(filters, BrowseFileType::IMAGE);
+		std::vector<std::string> result = pfd::open_file(title, "", filters).result();
+		if (!result.empty()) {
+			g_requestManager.PostSystemSuccess(requestId, result[0]);
+		} else {
+			g_requestManager.PostSystemFailure(requestId);
+		}
+		return true;
+	}
+	case SystemRequestType::BROWSE_FOR_FILE:
+	case SystemRequestType::BROWSE_FOR_FILE_SAVE:
+	{
+		// TODO: Add non-blocking support.
+		const BrowseFileType browseType = (BrowseFileType)param3;
+		std::string initialFilename = param2;
+		const std::string &title = param1;
+		std::vector<std::string> filters;
+		InitializeFilters(filters, browseType);
+		if (type == SystemRequestType::BROWSE_FOR_FILE) {
+			std::vector<std::string> result = pfd::open_file(title, initialFilename, filters).result();
+			if (!result.empty()) {
+				g_requestManager.PostSystemSuccess(requestId, result[0]);
+			} else {
+				g_requestManager.PostSystemFailure(requestId);
+			}
+		} else {
+			std::string result = pfd::save_file(title, initialFilename, filters).result();
+			if (!result.empty()) {
+				g_requestManager.PostSystemSuccess(requestId, result);
+			} else {
+				g_requestManager.PostSystemFailure(requestId);
+			}
+		}
+		return true;
+	}
+	case SystemRequestType::BROWSE_FOR_FOLDER:
+	{
+		// TODO: Add non-blocking support.
+		std::string result = pfd::select_folder(param1, param2).result();
+		if (!result.empty()) {
+			g_requestManager.PostSystemSuccess(requestId, result);
+		} else {
+			g_requestManager.PostSystemFailure(requestId);
+		}
 		return true;
 	}
 #endif
@@ -368,7 +501,11 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		}
 		return true;
 	}
+	case SystemRequestType::SET_KEEP_SCREEN_BRIGHT:
+		INFO_LOG(Log::UI, "SET_KEEP_SCREEN_BRIGHT not implemented.");
+		return true;
 	default:
+		INFO_LOG(Log::UI, "Unhandled system request %s", RequestTypeAsString(type));
 		return false;
 	}
 }
@@ -512,6 +649,12 @@ std::vector<std::string> System_GetPropertyStringVec(SystemProperty prop) {
 	}
 }
 
+#if PPSSPP_PLATFORM(MAC)
+extern "C" {
+int Apple_GetCurrentBatteryCapacity();
+}
+#endif
+
 int64_t System_GetPropertyInt(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_AUDIO_SAMPLE_RATE:
@@ -542,6 +685,18 @@ int64_t System_GetPropertyInt(SystemProperty prop) {
 		return g_DesktopWidth;
 	case SYSPROP_DISPLAY_YRES:
 		return g_DesktopHeight;
+	case SYSPROP_BATTERY_PERCENTAGE:
+#if PPSSPP_PLATFORM(MAC)
+	// Let's keep using the old code on Mac for safety. Evaluate later if to be deleted.
+		return Apple_GetCurrentBatteryCapacity();
+#else
+		{
+			int seconds = 0;
+			int percentage = 0;
+			SDL_GetPowerInfo(&seconds, &percentage);
+			return percentage;
+		}
+#endif
 	default:
 		return -1;
 	}
@@ -594,16 +749,18 @@ bool System_GetPropertyBool(SystemProperty prop) {
 #endif
 	case SYSPROP_CAN_JIT:
 		return true;
-	case SYSPROP_SUPPORTS_OPEN_FILE_IN_EDITOR: 
+	case SYSPROP_SUPPORTS_OPEN_FILE_IN_EDITOR:
 		return true;  // FileUtil.cpp: OpenFileInEditor
 #ifndef HTTPS_NOT_AVAILABLE
 	case SYSPROP_SUPPORTS_HTTPS:
 		return !g_Config.bDisableHTTPS;
 #endif
+case SYSPROP_HAS_FOLDER_BROWSER:
+case SYSPROP_HAS_FILE_BROWSER:
 #if PPSSPP_PLATFORM(MAC)
-	case SYSPROP_HAS_FOLDER_BROWSER:
-	case SYSPROP_HAS_FILE_BROWSER:
 		return true;
+#else
+		return pfd::settings::available();
 #endif
 	case SYSPROP_HAS_ACCELEROMETER:
 #if defined(MOBILE_DEVICE)
@@ -611,6 +768,17 @@ bool System_GetPropertyBool(SystemProperty prop) {
 #else
 		return false;
 #endif
+	case SYSPROP_CAN_READ_BATTERY_PERCENTAGE:
+		return true;
+	case SYSPROP_ENOUGH_RAM_FOR_FULL_ISO:
+#if PPSSPP_ARCH(64BIT) && !defined(MOBILE_DEVICE)
+		return true;
+#else
+		return false;
+#endif
+	// hack for testing - do not commit
+	case SYSPROP_USE_IAP:
+		return false;
 	default:
 		return false;
 	}
@@ -686,7 +854,7 @@ static std::thread emuThread;
 static std::atomic<int> emuThreadState((int)EmuThreadState::DISABLED);
 
 static void EmuThreadFunc(GraphicsContext *graphicsContext) {
-	SetCurrentThreadName("Emu");
+	SetCurrentThreadName("EmuThread");
 
 	// There's no real requirement that NativeInit happen on this thread.
 	// We just call the update/render loop here.
@@ -695,7 +863,7 @@ static void EmuThreadFunc(GraphicsContext *graphicsContext) {
 	NativeInitGraphics(graphicsContext);
 
 	while (emuThreadState != (int)EmuThreadState::QUIT_REQUESTED) {
-		UpdateRunLoop(graphicsContext);
+		NativeFrame(graphicsContext);
 	}
 	emuThreadState = (int)EmuThreadState::STOPPED;
 	graphicsContext->StopThread();
@@ -729,15 +897,45 @@ struct InputStateTracker {
 		}
 	}
 
-	bool mouseDown;
+	int mouseDown;  // bitflags
 	bool mouseCaptured;
 };
+
+SDL_Cursor *g_builtinCursors[SDL_NUM_SYSTEM_CURSORS];
+
+static SDL_SystemCursor GetSDLCursorFromImgui(ImGuiMouseCursor cursor) {
+	switch (cursor) {
+	case ImGuiMouseCursor_Arrow:        return SDL_SYSTEM_CURSOR_ARROW; break;
+	case ImGuiMouseCursor_TextInput:    return SDL_SYSTEM_CURSOR_IBEAM; break;
+	case ImGuiMouseCursor_ResizeAll:    return SDL_SYSTEM_CURSOR_SIZEALL; break;
+	case ImGuiMouseCursor_ResizeEW:     return SDL_SYSTEM_CURSOR_SIZEWE; break;
+	case ImGuiMouseCursor_ResizeNS:     return SDL_SYSTEM_CURSOR_SIZENS; break;
+	case ImGuiMouseCursor_ResizeNESW:   return SDL_SYSTEM_CURSOR_SIZENESW; break;
+	case ImGuiMouseCursor_ResizeNWSE:   return SDL_SYSTEM_CURSOR_SIZENWSE; break;
+	case ImGuiMouseCursor_Hand:         return SDL_SYSTEM_CURSOR_HAND; break;
+	case ImGuiMouseCursor_NotAllowed:   return SDL_SYSTEM_CURSOR_NO; break;
+	default:							return SDL_SYSTEM_CURSOR_ARROW; break;
+	}
+}
+
+void UpdateCursor() {
+	static SDL_SystemCursor curCursor = SDL_SYSTEM_CURSOR_ARROW;
+	auto cursor = ImGui_ImplPlatform_GetCursor();
+	SDL_SystemCursor sysCursor = GetSDLCursorFromImgui(cursor);
+	if (sysCursor != curCursor) {
+		curCursor = sysCursor;
+		if (!g_builtinCursors[(int)curCursor]) {
+			g_builtinCursors[(int)curCursor] = SDL_CreateSystemCursor(curCursor);
+		}
+	}
+	SDL_SetCursor(g_builtinCursors[(int)curCursor]);
+}
 
 static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputStateTracker *inputTracker) {
 	// We have to juggle around 3 kinds of "DPI spaces" if a logical DPI is
 	// provided (through --dpi, it is equal to system DPI if unspecified):
 	// - SDL gives us motion events in "system DPI" points
-	// - UpdateScreenScale expects pixels, so in a way "96 DPI" points
+	// - Native_UpdateScreenScale expects pixels, so in a way "96 DPI" points
 	// - The UI code expects motion events in "logical DPI" points
 	float mx = event.motion.x * g_DesktopDPI * g_display.dpi_scale_x;
 	float my = event.motion.y * g_DesktopDPI * g_display.dpi_scale_x;
@@ -756,17 +954,17 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			int new_height = event.window.data2;
 
 			// The size given by SDL is in point-units, convert these to
-			// pixels before passing to UpdateScreenScale()
+			// pixels before passing to Native_UpdateScreenScale()
 			int new_width_px = new_width * g_DesktopDPI;
 			int new_height_px = new_height * g_DesktopDPI;
 
-			Core_NotifyWindowHidden(false);
+			Native_NotifyWindowHidden(false);
 
 			Uint32 window_flags = SDL_GetWindowFlags(window);
 			bool fullscreen = (window_flags & SDL_WINDOW_FULLSCREEN);
 
 			// This one calls NativeResized if the size changed.
-			UpdateScreenScale(new_width_px, new_height_px);
+			Native_UpdateScreenScale(new_width_px, new_height_px, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 
 			// Set variable here in case fullscreen was toggled by hotkey
 			if (g_Config.UseFullScreen() != fullscreen) {
@@ -804,11 +1002,11 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 
 		case SDL_WINDOWEVENT_MINIMIZED:
 		case SDL_WINDOWEVENT_HIDDEN:
-			Core_NotifyWindowHidden(true);
+			Native_NotifyWindowHidden(true);
 			break;
 		case SDL_WINDOWEVENT_EXPOSED:
 		case SDL_WINDOWEVENT_SHOWN:
-			Core_NotifyWindowHidden(false);
+			Native_NotifyWindowHidden(false);
 			break;
 		default:
 			break;
@@ -843,7 +1041,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 				if (ctrl && (k == SDLK_w))
 				{
 					if (Core_IsStepping())
-						Core_EnableStepping(false);
+						Core_Resume();
 					Core_Stop();
 					System_PostUIMessage(UIMessage::REQUEST_GAME_STOP);
 					// NOTE: Unlike Windows version, this
@@ -851,11 +1049,16 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 					// since SDL does not have a separate
 					// UI thread.
 				}
-				if (ctrl && (k == SDLK_b))
-				{
-					System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
-					Core_EnableStepping(false);
+
+				/*
+				// TODO: Enable this?
+				if (k == SDLK_F11) {
+#if !defined(MOBILE_DEVICE)
+					g_Config.bFullScreen = !g_Config.bFullScreen;
+					System_ToggleFullscreenState("");
+#endif
 				}
+				*/
 			}
 			break;
 		}
@@ -891,7 +1094,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		{
 			int w, h;
 			SDL_GetWindowSize(window, &w, &h);
-			TouchInput input;
+			TouchInput input{};
 			input.id = event.tfinger.fingerId;
 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
 			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
@@ -904,7 +1107,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		{
 			int w, h;
 			SDL_GetWindowSize(window, &w, &h);
-			TouchInput input;
+			TouchInput input{};
 			input.id = event.tfinger.fingerId;
 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
 			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
@@ -912,7 +1115,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			input.timestamp = event.tfinger.timestamp;
 			NativeTouch(input);
 
-			KeyInput key;
+			KeyInput key{};
 			key.deviceId = DEVICE_ID_MOUSE;
 			key.keyCode = NKCODE_EXT_MOUSEBUTTON_1;
 			key.flags = KEY_DOWN;
@@ -923,7 +1126,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		{
 			int w, h;
 			SDL_GetWindowSize(window, &w, &h);
-			TouchInput input;
+			TouchInput input{};
 			input.id = event.tfinger.fingerId;
 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
 			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
@@ -943,11 +1146,12 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		switch (event.button.button) {
 		case SDL_BUTTON_LEFT:
 			{
-				inputTracker->mouseDown = true;
+				inputTracker->mouseDown |= 1;
 				TouchInput input{};
 				input.x = mx;
 				input.y = my;
 				input.flags = TOUCH_DOWN | TOUCH_MOUSE;
+				input.buttons = 1;
 				input.id = 0;
 				NativeTouch(input);
 				KeyInput key(DEVICE_ID_MOUSE, NKCODE_EXT_MOUSEBUTTON_1, KEY_DOWN);
@@ -956,12 +1160,12 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			break;
 		case SDL_BUTTON_RIGHT:
 			{
-				// Right button only emits mouse move events. This is weird,
-				// but consistent with Windows. Needs cleanup.
+				inputTracker->mouseDown |= 2;
 				TouchInput input{};
 				input.x = mx;
 				input.y = my;
-				input.flags = TOUCH_MOVE | TOUCH_MOUSE;
+				input.flags = TOUCH_DOWN | TOUCH_MOUSE;
+				input.buttons = 2;
 				input.id = 0;
 				NativeTouch(input);
 				KeyInput key(DEVICE_ID_MOUSE, NKCODE_EXT_MOUSEBUTTON_2, KEY_DOWN);
@@ -990,7 +1194,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		break;
 	case SDL_MOUSEWHEEL:
 		{
-			KeyInput key;
+			KeyInput key{};
 			key.deviceId = DEVICE_ID_MOUSE;
 			key.flags = KEY_DOWN;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
@@ -1018,25 +1222,29 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			break;
 		}
 	case SDL_MOUSEMOTION:
-		if (inputTracker->mouseDown) {
+		{
 			TouchInput input{};
 			input.x = mx;
 			input.y = my;
 			input.flags = TOUCH_MOVE | TOUCH_MOUSE;
+			input.buttons = inputTracker->mouseDown;
 			input.id = 0;
 			NativeTouch(input);
+			NativeMouseDelta(event.motion.xrel, event.motion.yrel);
+
+			UpdateCursor();
+			break;
 		}
-		NativeMouseDelta(event.motion.xrel, event.motion.yrel);
-		break;
 	case SDL_MOUSEBUTTONUP:
 		switch (event.button.button) {
 		case SDL_BUTTON_LEFT:
 			{
-				inputTracker->mouseDown = false;
+				inputTracker->mouseDown &= ~1;
 				TouchInput input{};
 				input.x = mx;
 				input.y = my;
 				input.flags = TOUCH_UP | TOUCH_MOUSE;
+				input.buttons = 1;
 				NativeTouch(input);
 				KeyInput key(DEVICE_ID_MOUSE, NKCODE_EXT_MOUSEBUTTON_1, KEY_UP);
 				NativeKey(key);
@@ -1044,12 +1252,14 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			break;
 		case SDL_BUTTON_RIGHT:
 			{
+				inputTracker->mouseDown &= ~2;
 				// Right button only emits mouse move events. This is weird,
 				// but consistent with Windows. Needs cleanup.
 				TouchInput input{};
 				input.x = mx;
 				input.y = my;
-				input.flags = TOUCH_MOVE | TOUCH_MOUSE;
+				input.flags = TOUCH_UP | TOUCH_MOUSE;
+				input.buttons = 2;
 				NativeTouch(input);
 				KeyInput key(DEVICE_ID_MOUSE, NKCODE_EXT_MOUSEBUTTON_2, KEY_UP);
 				NativeKey(key);
@@ -1082,12 +1292,20 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		if (event.adevice.iscapture == 0) {
 			const char *name = SDL_GetAudioDeviceName(event.adevice.which, 0);
 			if (!name) {
+				INFO_LOG(Log::Audio, "Got bogus new audio device notification");
 				break;
 			}
-			// Don't start auto switching for a second, because some devices init on start.
-			bool doAutoSwitch = g_Config.bAutoAudioDevice && time_now_d() > 1.0f;
+			// Don't start auto switching for a couple of seconds, because some devices init on start.
+			bool doAutoSwitch = g_Config.bAutoAudioDevice;
+			if ((time_now_d() - g_audioStartTime) < 3.0) {
+				INFO_LOG(Log::Audio, "Ignoring new audio device: %s (current: %s)", name, g_Config.sAudioDevice.c_str());
+				doAutoSwitch = false;
+			}
 			if (doAutoSwitch || g_Config.sAudioDevice == name) {
 				StopSDLAudioDevice();
+
+				INFO_LOG(Log::Audio, "!!! Auto-switching to new audio device: '%s'", name);
+
 				InitSDLAudioDevice(name ? name : "");
 			}
 		}
@@ -1095,6 +1313,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 	case SDL_AUDIODEVICEREMOVED:
 		if (event.adevice.iscapture == 0 && event.adevice.which == audioDev) {
 			StopSDLAudioDevice();
+			INFO_LOG(Log::Audio, "Audio device removed, reselecting");
 			InitSDLAudioDevice();
 		}
 		break;
@@ -1144,6 +1363,8 @@ int main(int argc, char *argv[]) {
 	}
 
 	TimeInit();
+
+	g_logManager.EnableOutput(LogOutput::Stdio);
 
 #ifdef HAVE_LIBNX
 	socketInitializeDefault();
@@ -1411,17 +1632,12 @@ int main(int argc, char *argv[]) {
 		}
 #endif
 	}
-#if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
-	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
-		g_ForcedDPI = 1.0f;
-	}
-#endif
 
 	UpdateScreenDPI(window);
 
 	float dpi_scale = 1.0f / (g_ForcedDPI == 0.0f ? g_DesktopDPI : g_ForcedDPI);
 
-	UpdateScreenScale(w * g_DesktopDPI, h * g_DesktopDPI);
+	Native_UpdateScreenScale(w * g_DesktopDPI, h * g_DesktopDPI, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 
 	bool mainThreadIsRender = g_Config.iGPUBackend == (int)GPUBackend::OPENGL;
 
@@ -1466,6 +1682,7 @@ int main(int argc, char *argv[]) {
 	SDL_StopTextInput();
 
 	InitSDLAudioDevice();
+	g_audioStartTime = time_now_d();
 
 	if (joystick_enabled) {
 		joystick = new SDLJoystick();
@@ -1479,13 +1696,22 @@ int main(int argc, char *argv[]) {
 	graphicsContext->ThreadStart();
 
 	InputStateTracker inputTracker{};
-	
+
 #if PPSSPP_PLATFORM(MAC)
 	// setup menu items for macOS
 	initializeOSXExtras();
 #endif
 
 	bool waitOnExit = g_Config.iGPUBackend == (int)GPUBackend::OPENGL;
+
+	// Check if the path to a directory containing an unpacked ISO is passed as a command line argument
+	for (int i = 1; i < argc; i++) {
+		if (File::IsDirectory(Path(argv[i]))) {
+			// Display the toast warning
+			System_Toast("Warning: Playing unpacked games may cause issues.");
+			break;
+		}
+	}
 
 	if (!mainThreadIsRender) {
 		// Vulkan mode uses this.
@@ -1521,7 +1747,7 @@ int main(int argc, char *argv[]) {
 		if (g_QuitRequested || g_RestartRequested)
 			break;
 		if (emuThreadState == (int)EmuThreadState::DISABLED) {
-			UpdateRunLoop(graphicsContext);
+			NativeFrame(graphicsContext);
 		}
 		if (g_QuitRequested || g_RestartRequested)
 			break;
@@ -1531,7 +1757,7 @@ int main(int argc, char *argv[]) {
 
 		inputTracker.MouseCaptureControl();
 
-		bool renderThreadPaused = Core_IsWindowHidden() && g_Config.bPauseWhenMinimized && emuThreadState != (int)EmuThreadState::DISABLED;
+		bool renderThreadPaused = Native_IsWindowHidden() && g_Config.bPauseWhenMinimized && emuThreadState != (int)EmuThreadState::DISABLED;
 		if (emuThreadState != (int)EmuThreadState::DISABLED && !renderThreadPaused) {
 			if (!graphicsContext->ThreadFrame())
 				break;

@@ -42,14 +42,12 @@
 #include "Common/File/FileUtil.h"
 #include "Common/TimeUtil.h"
 #include "Core/Config.h"
-#include "Core/System.h"
 #include "GPU/Math3D.h"
 #include "GPU/GPUState.h"
 #include "GPU/ge_constants.h"
 #include "GPU/Common/ShaderUniforms.h"
 #include "GPU/GLES/ShaderManagerGLES.h"
 #include "GPU/GLES/DrawEngineGLES.h"
-#include "GPU/GLES/FramebufferManagerGLES.h"
 
 using namespace Lin;
 
@@ -343,8 +341,10 @@ static inline void FlipProjMatrix(Matrix4x4 &in, bool useBufferedRendering) {
 static inline bool GuessVRDrawingHUD(bool is2D, bool flatScreen) {
 
 	bool hud = true;
+	//HUD shouldn't be modified in nonVR mode
+	if (IsBigScreenVRMode()) hud = false;
 	//HUD can be disabled in settings
-	if (!g_Config.bRescaleHUD) hud = false;
+	else if (!g_Config.bRescaleHUD) hud = false;
 	//HUD cannot be rendered in flatscreen
 	else if (flatScreen) hud = false;
 	//HUD has to be 2D
@@ -778,10 +778,10 @@ Shader *ShaderManagerGLES::CompileVertexShader(VShaderID VSID) {
 	return new Shader(render_, codeBuffer_, desc, params);
 }
 
-Shader *ShaderManagerGLES::ApplyVertexShader(bool useHWTransform, bool useHWTessellation, VertexDecoder *decoder, bool weightsAsFloat, bool useSkinInDecode, VShaderID *VSID) {
+Shader *ShaderManagerGLES::ApplyVertexShader(bool useHWTransform, bool useHWTessellation, u32 vertexType, bool weightsAsFloat, bool useSkinInDecode, VShaderID *VSID) {
 	if (gstate_c.IsDirty(DIRTY_VERTEXSHADER_STATE)) {
 		gstate_c.Clean(DIRTY_VERTEXSHADER_STATE);
-		ComputeVertexShaderID(VSID, decoder, useHWTransform, useHWTessellation, weightsAsFloat, useSkinInDecode);
+		ComputeVertexShaderID(VSID, vertexType, useHWTransform, useHWTessellation, weightsAsFloat, useSkinInDecode);
 	} else {
 		*VSID = lastVSID_;
 	}
@@ -814,7 +814,7 @@ Shader *ShaderManagerGLES::ApplyVertexShader(bool useHWTransform, bool useHWTess
 
 		// Can still work with software transform.
 		VShaderID vsidTemp;
-		ComputeVertexShaderID(&vsidTemp, decoder, false, false, weightsAsFloat, true);
+		ComputeVertexShaderID(&vsidTemp, vertexType, false, false, weightsAsFloat, true);
 		vs = CompileVertexShader(vsidTemp);
 	}
 
@@ -975,7 +975,7 @@ enum class CacheDetectFlags {
 };
 
 #define CACHE_HEADER_MAGIC 0x83277592
-#define CACHE_VERSION 37
+#define CACHE_VERSION 38
 
 struct CacheHeader {
 	uint32_t magic;
@@ -1087,8 +1087,6 @@ bool ShaderManagerGLES::LoadCache(File::IOFile &f) {
 	if (pending.Done()) {
 		return true;
 	}
-
-	PSP_SetLoading("Compiling shaders...");
 
 	double start = time_now_d();
 

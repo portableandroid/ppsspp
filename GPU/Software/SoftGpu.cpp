@@ -16,6 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <set>
+
 #include "Common/System/Display.h"
 #include "Common/GPU/OpenGL/GLFeatures.h"
 
@@ -28,11 +29,9 @@
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/Core.h"
+#include "Core/System.h"
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/MemMap.h"
-#include "Core/MemMapHelpers.h"
-#include "Core/HLE/sceKernelInterrupt.h"
-#include "Core/HLE/sceGe.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/Util/PPGeDraw.h"
 #include "Common/Profiler/Profiler.h"
@@ -47,7 +46,6 @@
 #include "GPU/Common/PresentationCommon.h"
 #include "Common/GPU/ShaderTranslation.h"
 #include "GPU/Common/SplineCommon.h"
-#include "GPU/Debugger/Debugger.h"
 #include "GPU/Debugger/Record.h"
 
 const int FB_WIDTH = 480;
@@ -433,9 +431,7 @@ SoftGPU::SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	Rasterizer::Init();
 	Sampler::Init();
 	drawEngine_ = new SoftwareDrawEngine();
-	if (!drawEngine_)
-		return;
-
+	drawEngine_->SetGPUCommon(this);
 	drawEngine_->Init();
 	drawEngineCommon_ = drawEngine_;
 
@@ -493,8 +489,8 @@ void SoftGPU::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat for
 	displayFramebuf_ = (framebuf & 0xFF000000) == 0 ? 0x44000000 | framebuf : framebuf;
 	displayStride_ = stride;
 	displayFormat_ = format;
-	GPUDebug::NotifyDisplay(framebuf, stride, format);
-	GPURecord::NotifyDisplay(framebuf, stride, format);
+
+	NotifyDisplay(framebuf, stride, format);
 }
 
 DSStretch g_DarkStalkerStretch;
@@ -638,7 +634,6 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 	case GPUBackend::OPENGL:
 		outputFlags |= OutputFlags::BACKBUFFER_FLIPPED;
 		break;
-	case GPUBackend::DIRECT3D9:
 	case GPUBackend::DIRECT3D11:
 		outputFlags |= OutputFlags::POSITION_FLIPPED;
 		break;
@@ -651,7 +646,7 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 }
 
 void SoftGPU::CopyDisplayToOutput(bool reallyDirty) {
-	drawEngine_->transformUnit.Flush("output");
+	drawEngine_->transformUnit.Flush(this, "output");
 	// The display always shows 480x272.
 	CopyToCurrentFboFromDisplayRam(FB_WIDTH, FB_HEIGHT);
 	MarkDirty(displayFramebuf_, displayStride_, 272, displayFormat_, SoftGPUVRAMDirty::CLEAR);
@@ -665,7 +660,7 @@ void SoftGPU::BeginHostFrame() {
 }
 
 bool SoftGPU::PresentedThisFrame() const {
-	return presentation_->PresentedThisFrame();
+	return presentation_ ? presentation_->PresentedThisFrame() : false;
 }
 
 void SoftGPU::MarkDirty(uint32_t addr, uint32_t stride, uint32_t height, GEBufferFormat fmt, SoftGPUVRAMDirty value) {
@@ -839,10 +834,10 @@ void SoftGPU::Execute_BlockTransferStart(u32 op, u32 diff) {
 
 	// Need to flush both source and target, so we overwrite properly.
 	if (Memory::IsValidRange(src, srcSize) && Memory::IsValidRange(dst, dstSize)) {
-		drawEngine_->transformUnit.FlushIfOverlap("blockxfer", false, src, srcStride, width * bpp, height);
-		drawEngine_->transformUnit.FlushIfOverlap("blockxfer", true, dst, dstStride, width * bpp, height);
+		drawEngine_->transformUnit.FlushIfOverlap(this, "blockxfer", false, src, srcStride, width * bpp, height);
+		drawEngine_->transformUnit.FlushIfOverlap(this, "blockxfer", true, dst, dstStride, width * bpp, height);
 	} else {
-		drawEngine_->transformUnit.Flush("blockxfer_wrap");
+		drawEngine_->transformUnit.Flush(this, "blockxfer_wrap");
 	}
 
 	DoBlockTransfer(gstate_c.skipDrawReason);
@@ -1004,7 +999,7 @@ void SoftGPU::Execute_LoadClut(u32 op, u32 diff) {
 		clutTotalBytes = 1024;
 
 	// Might be copying drawing into the CLUT, so flush.
-	drawEngine_->transformUnit.FlushIfOverlap("loadclut", false, clutAddr, clutTotalBytes, clutTotalBytes, 1);
+	drawEngine_->transformUnit.FlushIfOverlap(this, "loadclut", false, clutAddr, clutTotalBytes, clutTotalBytes, 1);
 
 	bool changed = false;
 	if (Memory::IsValidAddress(clutAddr)) {
@@ -1032,7 +1027,7 @@ void SoftGPU::Execute_LoadClut(u32 op, u32 diff) {
 void SoftGPU::Execute_FramebufPtr(u32 op, u32 diff) {
 	// We assume fb.data won't change while we're drawing.
 	if (diff) {
-		drawEngine_->transformUnit.Flush("framebuf");
+		drawEngine_->transformUnit.Flush(this, "framebuf");
 		fb.data = Memory::GetPointerWrite(gstate.getFrameBufAddress());
 	}
 }
@@ -1040,7 +1035,7 @@ void SoftGPU::Execute_FramebufPtr(u32 op, u32 diff) {
 void SoftGPU::Execute_FramebufFormat(u32 op, u32 diff) {
 	// We should flush, because ranges within bins may change.
 	if (diff)
-		drawEngine_->transformUnit.Flush("framebuf");
+		drawEngine_->transformUnit.Flush(this, "framebuf");
 }
 
 void SoftGPU::Execute_BoundingBox(u32 op, u32 diff) {
@@ -1051,7 +1046,7 @@ void SoftGPU::Execute_BoundingBox(u32 op, u32 diff) {
 void SoftGPU::Execute_ZbufPtr(u32 op, u32 diff) {
 	// We assume depthbuf.data won't change while we're drawing.
 	if (diff) {
-		drawEngine_->transformUnit.Flush("depthbuf");
+		drawEngine_->transformUnit.Flush(this, "depthbuf");
 		// For the pointer, ignore memory mirrors.  This also gives some buffer for draws that go outside.
 		// TODO: Confirm how wrapping is handled in drawing.  Adjust if we ever handle VRAM mirrors more accurately.
 		depthbuf.data = Memory::GetPointerWrite(gstate.getDepthBufAddress() & 0x041FFFF0);
@@ -1272,18 +1267,18 @@ void SoftGPU::Execute_Call(u32 op, u32 diff) {
 
 void SoftGPU::FinishDeferred() {
 	// Need to flush before going back to CPU, so drawing is appropriately visible.
-	drawEngine_->transformUnit.Flush("finish");
+	drawEngine_->transformUnit.Flush(this, "finish");
 }
 
 int SoftGPU::ListSync(int listid, int mode) {
 	// Take this as a cue that we need to finish drawing.
-	drawEngine_->transformUnit.Flush("listsync");
+	drawEngine_->transformUnit.Flush(this, "listsync");
 	return GPUCommon::ListSync(listid, mode);
 }
 
 u32 SoftGPU::DrawSync(int mode) {
 	// Take this as a cue that we need to finish drawing.
-	drawEngine_->transformUnit.Flush("drawsync");
+	drawEngine_->transformUnit.Flush(this, "drawsync");
 	return GPUCommon::DrawSync(mode);
 }
 
@@ -1305,7 +1300,7 @@ bool SoftGPU::PerformMemoryCopy(u32 dest, u32 src, int size, GPUCopyFlag flags) 
 	// Nothing to update.
 	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
 	if (!(flags & GPUCopyFlag::DEBUG_NOTIFIED))
-		GPURecord::NotifyMemcpy(dest, src, size);
+		recorder_.NotifyMemcpy(dest, src, size);
 	// Let's just be safe.
 	MarkDirty(dest, size, SoftGPUVRAMDirty::DIRTY | SoftGPUVRAMDirty::REALLY_DIRTY);
 	return false;
@@ -1315,7 +1310,7 @@ bool SoftGPU::PerformMemorySet(u32 dest, u8 v, int size)
 {
 	// Nothing to update.
 	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
-	GPURecord::NotifyMemset(dest, v, size);
+	recorder_.NotifyMemset(dest, v, size);
 	// Let's just be safe.
 	MarkDirty(dest, size, SoftGPUVRAMDirty::DIRTY | SoftGPUVRAMDirty::REALLY_DIRTY);
 	return false;
@@ -1332,7 +1327,7 @@ bool SoftGPU::PerformWriteColorFromMemory(u32 dest, int size)
 {
 	// Nothing to update.
 	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
-	GPURecord::NotifyUpload(dest, size);
+	recorder_.NotifyUpload(dest, size);
 	return false;
 }
 
@@ -1449,8 +1444,7 @@ bool SoftGPU::GetCurrentTexture(GPUDebugBuffer &buffer, int level, bool *isFrame
 	return Rasterizer::GetCurrentTexture(buffer, level);
 }
 
-bool SoftGPU::GetCurrentClut(GPUDebugBuffer &buffer)
-{
+bool SoftGPU::GetCurrentClut(GPUDebugBuffer &buffer) {
 	const u32 bpp = gstate.getClutPaletteFormat() == GE_CMODE_32BIT_ABGR8888 ? 4 : 2;
 	const u32 pixels = 1024 / bpp;
 
@@ -1459,9 +1453,9 @@ bool SoftGPU::GetCurrentClut(GPUDebugBuffer &buffer)
 	return true;
 }
 
-bool SoftGPU::GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) {
+bool SoftGPU::GetCurrentDrawAsDebugVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) {
 	gstate_c.UpdateUVScaleOffset();
-	return drawEngine_->transformUnit.GetCurrentSimpleVertices(count, vertices, indices);
+	return drawEngine_->transformUnit.GetCurrentDrawAsDebugVertices(count, vertices, indices);
 }
 
 bool SoftGPU::DescribeCodePtr(const u8 *ptr, std::string &name) {

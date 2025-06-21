@@ -1,6 +1,6 @@
-#include <algorithm>
-#include <ctype.h>
+#include <cctype>
 #include <set>
+#include <algorithm>  // for sort
 #include <cstdio>
 #include <cstring>
 
@@ -44,7 +44,7 @@ ZipFileReader *ZipFileReader::Create(const Path &zipFile, const char *inZipPath,
 	if (!path.empty() && path.back() != '/') {
 		path.push_back('/');
 	}
-	return new ZipFileReader(zip_file, path);
+	return new ZipFileReader(zip_file, zipFile, path);
 }
 
 ZipFileReader::~ZipFileReader() {
@@ -58,8 +58,12 @@ uint8_t *ZipFileReader::ReadFile(const char *path, size_t *size) {
 	std::lock_guard<std::mutex> guard(lock_);
 	// Figure out the file size first.
 	struct zip_stat zstat;
-	zip_stat(zip_file_, temp_path.c_str(), ZIP_FL_NOCASE | ZIP_FL_UNCHANGED, &zstat);
-	zip_file *file = zip_fopen(zip_file_, temp_path.c_str(), ZIP_FL_NOCASE | ZIP_FL_UNCHANGED);
+	int retval = zip_stat(zip_file_, temp_path.c_str(), ZIP_FL_NOCASE | ZIP_FL_UNCHANGED, &zstat);
+	if (retval != 0) {
+		ERROR_LOG(Log::IO, "Error opening %s from ZIP", temp_path.c_str());
+		return 0;
+	}
+	zip_file *file = zip_fopen_index(zip_file_, zstat.index, ZIP_FL_NOCASE | ZIP_FL_UNCHANGED);
 	if (!file) {
 		ERROR_LOG(Log::IO, "Error opening %s from ZIP", temp_path.c_str());
 		return 0;
@@ -107,7 +111,7 @@ bool ZipFileReader::GetFileListing(const char *orig_path, std::vector<File::File
 
 	listing->clear();
 
-	// INFO_LOG(Log::System, "Zip: Listing '%s'", orig_path);
+	// INFO_LOG(Log::IO, "Zip: Listing '%s'", orig_path);
 
 	const std::string relativePath = path.substr(inZipPath_.size());
 
@@ -121,7 +125,7 @@ bool ZipFileReader::GetFileListing(const char *orig_path, std::vector<File::File
 		info.exists = true;
 		info.isWritable = false;
 		info.isDirectory = true;
-		// INFO_LOG(Log::System, "Found file: %s (%s)", info.name.c_str(), info.fullName.c_str());
+		// INFO_LOG(Log::IO, "Found file: %s (%s)", info.name.c_str(), info.fullName.c_str());
 		listing->push_back(info);
 	}
 
@@ -138,7 +142,7 @@ bool ZipFileReader::GetFileListing(const char *orig_path, std::vector<File::File
 				continue;
 			}
 		}
-		// INFO_LOG(Log::System, "Found dir: %s (%s)", info.name.c_str(), info.fullName.c_str());
+		// INFO_LOG(Log::IO, "Found dir: %s (%s)", info.name.c_str(), info.fullName.c_str());
 		listing->push_back(info);
 	}
 
@@ -229,8 +233,7 @@ public:
 };
 
 VFSFileReference *ZipFileReader::GetFile(const char *path) {
-	std::lock_guard<std::mutex> guard(lock_);
-	int zi = zip_name_locate(zip_file_, path, ZIP_FL_NOCASE);
+	int zi = zip_name_locate(zip_file_, path, ZIP_FL_NOCASE);  // this is EXPENSIVE
 	if (zi < 0) {
 		// Not found.
 		return nullptr;
@@ -244,7 +247,6 @@ bool ZipFileReader::GetFileInfo(VFSFileReference *vfsReference, File::FileInfo *
 	ZipFileReaderFileReference *reference = (ZipFileReaderFileReference *)vfsReference;
 	// If you crash here, you called this while having the lock held by having the file open.
 	// Don't do that, check the info before you open the file.
-	std::lock_guard<std::mutex> guard(lock_);
 	zip_stat_t zstat;
 	if (zip_stat_index(zip_file_, reference->zi, 0, &zstat) != 0)
 		return false;
@@ -292,8 +294,11 @@ VFSOpenFile *ZipFileReader::OpenFileForRead(VFSFileReference *vfsReference, size
 void ZipFileReader::Rewind(VFSOpenFile *vfsOpenFile) {
 	ZipFileReaderOpenFile *file = (ZipFileReaderOpenFile *)vfsOpenFile;
 	_assert_(file);
+	// Unless the zip file is compressed, can't seek directly, so we re-open.
+	// This version of libzip doesn't even have zip_file_is_seekable(), should probably upgrade.
+	zip_fclose(file->zf);
+	file->zf = zip_fopen_index(zip_file_, file->reference->zi, 0);
 	_dbg_assert_(file->zf != nullptr);
-	zip_fseek(file->zf, 0, SEEK_SET);
 }
 
 size_t ZipFileReader::Read(VFSOpenFile *vfsOpenFile, void *buffer, size_t length) {
@@ -312,4 +317,52 @@ void ZipFileReader::CloseFile(VFSOpenFile *vfsOpenFile) {
 	vfsOpenFile = nullptr;
 	lock_.unlock();
 	delete file;
+}
+
+bool ReadSingleFileFromZip(Path zipFile, const char *path, std::string *data, std::mutex *mutex) {
+	zip *zip = nullptr;
+	int error = 0;
+	if (zipFile.Type() == PathType::CONTENT_URI) {
+		int fd = File::OpenFD(zipFile, File::OPEN_READ);
+		if (!fd) {
+			return false;
+		}
+		zip = zip_fdopen(fd, 0, &error);
+	} else {
+		zip = zip_open(zipFile.c_str(), 0, &error);
+	}
+
+	if (!zip) {
+		return false;
+	}
+
+	struct zip_stat zstat;
+	if (zip_stat(zip, path, ZIP_FL_NOCASE | ZIP_FL_UNCHANGED, &zstat) != 0) {
+		zip_close(zip);
+		return false;
+	}
+	zip_file *file = zip_fopen_index(zip, zstat.index, ZIP_FL_UNCHANGED);
+	if (!file) {
+		zip_close(zip);
+		return false;
+	}
+	if (mutex) {
+		mutex->lock();
+	}
+	data->resize(zstat.size);
+	if (zip_fread(file, data->data(), zstat.size) != zstat.size) {
+		if (mutex) {
+			mutex->unlock();
+		}
+		data->resize(0);
+		zip_fclose(file);
+		zip_close(zip);
+		return false;
+	}
+	if (mutex) {
+		mutex->unlock();
+	}
+	zip_fclose(file);
+	zip_close(zip);
+	return true;
 }

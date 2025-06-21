@@ -7,6 +7,7 @@
 
 #include "Common/StringUtils.h"
 
+// Don't forget to update the constants in the header file if you change this.
 static const char * const g_categoryNames[(size_t)I18NCat::CATEGORY_COUNT] = {
 	"Audio",
 	"Controls",
@@ -38,7 +39,6 @@ static const char * const g_categoryNames[(size_t)I18NCat::CATEGORY_COUNT] = {
 	"TextureShaders",
 	"Themes",
 	"UI Elements",
-	"Upgrade",
 	"VR",
 	"Achievements",
 	"PSPSettings",
@@ -131,9 +131,7 @@ Path I18NRepo::GetIniPath(const std::string &languageID) const {
 
 bool I18NRepo::IniExists(const std::string &languageID) const {
 	File::FileInfo info;
-	if (!g_VFS.GetFileInfo(GetIniPath(languageID).ToString().c_str(), &info))
-		return false;
-	if (!info.exists)
+	if (!g_VFS.Exists(GetIniPath(languageID).ToString().c_str()))
 		return false;
 	return true;
 }

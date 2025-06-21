@@ -18,20 +18,10 @@
 #include <string>
 
 #include "Common/Log.h"
-#include "Common/Serialize/Serializer.h"
 #include "Common/GraphicsContext.h"
-#include "Common/System/System.h"
 #include "Common/Profiler/Profiler.h"
-#include "Common/Data/Text/I18n.h"
-#include "Core/Debugger/Breakpoints.h"
-#include "Core/MemMapHelpers.h"
-#include "Core/MIPS/MIPS.h"
-#include "Core/Config.h"
-#include "Core/System.h"
 
 #include "GPU/GPUState.h"
-#include "GPU/ge_constants.h"
-#include "GPU/GeDisasm.h"
 
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/D3D11/ShaderManagerD3D11.h"
@@ -49,8 +39,6 @@ GPU_D3D11::GPU_D3D11(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	context_ = (ID3D11DeviceContext *)draw->GetNativeObject(Draw::NativeObject::CONTEXT);
 	D3D_FEATURE_LEVEL featureLevel = (D3D_FEATURE_LEVEL)draw->GetNativeObject(Draw::NativeObject::FEATURE_LEVEL);
 
-	stockD3D11.Create(device_);
-
 	shaderManagerD3D11_ = new ShaderManagerD3D11(draw, device_, context_, featureLevel);
 	framebufferManagerD3D11_ = new FramebufferManagerD3D11(draw);
 	framebufferManager_ = framebufferManagerD3D11_;
@@ -58,6 +46,7 @@ GPU_D3D11::GPU_D3D11(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	textureCache_ = textureCacheD3D11_;
 	drawEngineCommon_ = &drawEngine_;
 	shaderManager_ = shaderManagerD3D11_;
+	drawEngine_.SetGPUCommon(this);
 	drawEngine_.SetShaderManager(shaderManagerD3D11_);
 	drawEngine_.SetTextureCache(textureCacheD3D11_);
 	drawEngine_.SetFramebufferManager(framebufferManagerD3D11_);
@@ -84,6 +73,11 @@ GPU_D3D11::GPU_D3D11(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	// Some of our defaults are different from hw defaults, let's assert them.
 	// We restore each frame anyway, but here is convenient for tests.
 	textureCache_->NotifyConfigChanged();
+}
+
+void GPU_D3D11::FinishInitOnMainThread() {
+	textureCacheD3D11_->InitDeviceObjects();
+	stockD3D11.Create(device_);
 }
 
 GPU_D3D11::~GPU_D3D11() {

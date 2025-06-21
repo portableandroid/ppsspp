@@ -513,6 +513,7 @@ void GPUCommonHW::BeginHostFrame() {
 
 void GPUCommonHW::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) {
 	framebufferManager_->SetDisplayFramebuffer(framebuf, stride, format);
+	NotifyDisplay(framebuf, stride, format);
 }
 
 void GPUCommonHW::CheckFlushOp(int cmd, u32 diff) {
@@ -521,7 +522,7 @@ void GPUCommonHW::CheckFlushOp(int cmd, u32 diff) {
 		if (dumpThisFrame_) {
 			NOTICE_LOG(Log::G3D, "================ FLUSH ================");
 		}
-		drawEngineCommon_->DispatchFlush();
+		drawEngineCommon_->Flush();
 	}
 }
 
@@ -530,8 +531,9 @@ void GPUCommonHW::PreExecuteOp(u32 op, u32 diff) {
 }
 
 void GPUCommonHW::CopyDisplayToOutput(bool reallyDirty) {
+	drawEngineCommon_->FlushQueuedDepth();
 	// Flush anything left over.
-	drawEngineCommon_->DispatchFlush();
+	drawEngineCommon_->Flush();
 
 	shaderManager_->DirtyLastShader();
 
@@ -552,7 +554,6 @@ void GPUCommonHW::DoState(PointerWrap &p) {
 	// None of these are necessary when saving.
 	if (p.mode == p.MODE_READ && !PSP_CoreParameter().frozen) {
 		textureCache_->Clear(true);
-		drawEngineCommon_->ClearTrackedVertexArrays();
 
 		gstate_c.Dirty(DIRTY_TEXTURE_IMAGE);
 		framebufferManager_->DestroyAllFBOs();
@@ -617,6 +618,11 @@ u32 GPUCommonHW::CheckGPUFeatures() const {
 
 	if (draw_->GetDeviceCaps().framebufferFetchSupported) {
 		features |= GPU_USE_FRAMEBUFFER_FETCH;
+		features |= GPU_USE_SHADER_BLENDING;   // doesn't matter if we are buffered or not here.
+	} else {
+		if (!g_Config.bSkipBufferEffects) {
+			features |= GPU_USE_SHADER_BLENDING;
+		}
 	}
 
 	if (draw_->GetShaderLanguageDesc().bitwiseOps && g_Config.bUberShaderVertex) {
@@ -847,7 +853,7 @@ void GPUCommonHW::FastRunLoop(DisplayList &list) {
 		} else {
 			uint64_t flags = info.flags;
 			if (flags & FLAG_FLUSHBEFOREONCHANGE) {
-				drawEngineCommon_->DispatchFlush();
+				drawEngineCommon_->Flush();
 			}
 			gstate.cmdmem[cmd] = op;
 			if (flags & (FLAG_EXECUTE | FLAG_EXECUTEONCHANGE)) {
@@ -905,7 +911,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	FlushImm();
 
 	// Upper bits are ignored.
-	GEPrimitiveType prim = static_cast<GEPrimitiveType>((op >> 16) & 7);
+	const GEPrimitiveType prim = static_cast<GEPrimitiveType>((op >> 16) & 7);
 	SetDrawType(DRAW_PRIM, prim);
 
 	// Discard AA lines as we can't do anything that makes sense with these anyway. The SW plugin might, though.
@@ -949,16 +955,21 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	}
 
 	// This also makes skipping drawing very effective.
-	VirtualFramebuffer *vfb = framebufferManager_->SetRenderFrameBuffer(gstate_c.IsDirty(DIRTY_FRAMEBUF), gstate_c.skipDrawReason);
+	bool changed;
+	VirtualFramebuffer *const vfb = framebufferManager_->SetRenderFrameBuffer(gstate_c.IsDirty(DIRTY_FRAMEBUF), gstate_c.skipDrawReason, &changed);
 	if (blueToAlpha) {
 		vfb->usageFlags |= FB_USAGE_BLUE_TO_ALPHA;
+	}
+
+	if (changed) {
+		drawEngineCommon_->FlushQueuedDepth();
 	}
 
 	if (gstate_c.dirty & DIRTY_VERTEXSHADER_STATE) {
 		vertexCost_ = EstimatePerVertexCost();
 	}
 
-	u32 count = op & 0xFFFF;
+	const u32 count = op & 0xFFFF;
 	// Must check this after SetRenderFrameBuffer so we know SKIPDRAW_NON_DISPLAYED_FB.
 	if (gstate_c.skipDrawReason & (SKIPDRAW_SKIPFRAME | SKIPDRAW_NON_DISPLAYED_FB)) {
 		// Rough estimate, not sure what's correct.
@@ -974,14 +985,14 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	const void *verts = Memory::GetPointerUnchecked(gstate_c.vertexAddr);
 	const void *inds = nullptr;
 
-	bool isTriangle = IsTrianglePrim(prim);
+	const bool isTriangle = IsTrianglePrim(prim);
 
 	bool canExtend = isTriangle;
 	u32 vertexType = gstate.vertType;
 	if ((vertexType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		u32 indexAddr = gstate_c.indexAddr;
-		u32 indexSize = (vertexType & GE_VTYPE_IDX_MASK) >> GE_VTYPE_IDX_SHIFT;
-		if (!Memory::IsValidRange(indexAddr, count * indexSize)) {
+		const int indexShift = ((vertexType & GE_VTYPE_IDX_MASK) >> GE_VTYPE_IDX_SHIFT) - 1;
+		if (!Memory::IsValidRange(indexAddr, count << indexShift)) {
 			ERROR_LOG(Log::G3D, "Bad index address %08x (%d)!", indexAddr, count);
 			return;
 		}
@@ -989,13 +1000,27 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 		canExtend = false;
 	}
 
-	int bytesRead = 0;
 	gstate_c.UpdateUVScaleOffset();
 
 	// cull mode
 	int cullMode = gstate.getCullMode();
 
 	uint32_t vertTypeID = GetVertTypeID(vertexType, gstate.getUVGenMode(), g_Config.bSoftwareSkinning);
+	VertexDecoder *decoder = drawEngineCommon_->GetVertexDecoder(vertTypeID);
+
+	// Through mode early-out for simple float 2D draws, like in Fate Extra CCC (very beneficial there due to avoiding texture loads)
+	if ((vertexType & (GE_VTYPE_THROUGH_MASK | GE_VTYPE_POS_MASK | GE_VTYPE_IDX_MASK)) == (GE_VTYPE_THROUGH_MASK | GE_VTYPE_POS_FLOAT | GE_VTYPE_IDX_NONE)) {
+		int bytesRead = 0;
+		if (!drawEngineCommon_->TestBoundingBoxThrough(verts, count, decoder, vertexType, &bytesRead)) {
+			gpuStats.numCulledDraws++;
+			int cycles = vertexCost_ * count;
+			gpuStats.vertexGPUCycles += cycles;
+			cyclesExecuted += cycles;
+			// NOTE! We still have to advance vertex pointers!
+			gstate_c.vertexAddr += bytesRead;   // We know from the above check that it's not an indexed draw.
+			return;
+		}
+	}
 
 #define MAX_CULL_CHECK_COUNT 6
 
@@ -1014,24 +1039,26 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	bool passCulling = PASSES_CULLING;
 	if (!passCulling) {
 		// Do software culling.
-		if (drawEngineCommon_->TestBoundingBoxFast(verts, count, vertexType)) {
+		if (drawEngineCommon_->TestBoundingBoxFast(verts, count, decoder, vertexType)) {
 			passCulling = true;
 		} else {
 			gpuStats.numCulledDraws++;
 		}
 	}
 
+	int bytesRead = 0;
+
 	// If the first one in a batch passes, let's assume the whole batch passes.
 	// Cuts down on checking, while not losing that much efficiency.
 	bool onePassed = false;
 	if (passCulling) {
-		if (!drawEngineCommon_->SubmitPrim(verts, inds, prim, count, vertTypeID, true, &bytesRead)) {
+		if (!drawEngineCommon_->SubmitPrim(verts, inds, prim, count, decoder, vertTypeID, true, &bytesRead)) {
 			canExtend = false;
 		}
 		onePassed = true;
 	} else {
 		// Still need to advance bytesRead.
-		drawEngineCommon_->SkipPrim(prim, count, vertTypeID, &bytesRead);
+		drawEngineCommon_->SkipPrim(prim, count, decoder, vertTypeID, &bytesRead);
 		canExtend = false;
 	}
 
@@ -1039,6 +1066,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	// Some games rely on this, they don't bother reloading VADDR and IADDR.
 	// The VADDR/IADDR registers are NOT updated.
 	AdvanceVerts(vertexType, count, bytesRead);
+
 	int totalVertCount = count;
 
 	// PRIMs are often followed by more PRIMs. Save some work and submit them immediately.
@@ -1051,10 +1079,10 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	// PRIM commands with other commands. A special case is Earth Defence Force 2 that changes culling mode
 	// between each prim, we just change the triangle winding right here to still be able to join draw calls.
 
-	uint32_t vtypeCheckMask = g_Config.bSoftwareSkinning ? (~GE_VTYPE_WEIGHTCOUNT_MASK) : 0xFFFFFFFF;
+	const uint32_t vtypeCheckMask = g_Config.bSoftwareSkinning ? (~GE_VTYPE_WEIGHTCOUNT_MASK) : 0xFFFFFFFF;
 
-	if (debugRecording_)
-		goto bail;
+	if (!useFastRunLoop_)
+		goto bail;  // we're either recording or stepping.
 
 	while (src != stall) {
 		uint32_t data = *src;
@@ -1072,7 +1100,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 				// Non-indexed draws can be cheaply merged if vertexAddr hasn't changed, that means the vertices
 				// are consecutive in memory. We also ignore culling here.
 				_dbg_assert_((vertexType & GE_VTYPE_IDX_MASK) == GE_VTYPE_IDX_NONE);
-				int commandsExecuted = drawEngineCommon_->ExtendNonIndexedPrim(src, stall, vertTypeID, clockwise, &bytesRead, isTriangle);
+				int commandsExecuted = drawEngineCommon_->ExtendNonIndexedPrim(src, stall, decoder, vertTypeID, clockwise, &bytesRead, isTriangle);
 				if (!commandsExecuted) {
 					goto bail;
 				}
@@ -1085,7 +1113,13 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 			verts = Memory::GetPointerUnchecked(gstate_c.vertexAddr);
 			inds = nullptr;
 			if ((vertexType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
-				inds = Memory::GetPointerUnchecked(gstate_c.indexAddr);
+				const u32 indexAddr = gstate_c.indexAddr;
+				const int indexShift = ((vertexType & GE_VTYPE_IDX_MASK) >> GE_VTYPE_IDX_SHIFT) - 1;
+				if (!Memory::IsValidRange(gstate_c.indexAddr, count << indexShift)) {
+					// Bad index range. Let's give up the fast loop.
+					goto bail;
+				}
+				inds = Memory::GetPointerUnchecked(indexAddr);
 			} else {
 				// We can extend again after submitting a normal draw.
 				canExtend = isTriangle;
@@ -1095,21 +1129,21 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 			if (!passCulling) {
 				// Do software culling.
 				_dbg_assert_((vertexType & GE_VTYPE_IDX_MASK) == GE_VTYPE_IDX_NONE);
-				if (drawEngineCommon_->TestBoundingBoxFast(verts, count, vertexType)) {
+				if (drawEngineCommon_->TestBoundingBoxFast(verts, count, decoder, vertexType)) {
 					passCulling = true;
 				} else {
 					gpuStats.numCulledDraws++;
 				}
 			}
 			if (passCulling) {
-				if (!drawEngineCommon_->SubmitPrim(verts, inds, newPrim, count, vertTypeID, clockwise, &bytesRead)) {
+				if (!drawEngineCommon_->SubmitPrim(verts, inds, newPrim, count, decoder, vertTypeID, clockwise, &bytesRead)) {
 					canExtend = false;
 				}
 				// As soon as one passes, assume we don't need to check the rest of this batch.
 				onePassed = true;
 			} else {
 				// Still need to advance bytesRead.
-				drawEngineCommon_->SkipPrim(newPrim, count, vertTypeID, &bytesRead);
+				drawEngineCommon_->SkipPrim(newPrim, count, decoder, vertTypeID, &bytesRead);
 				canExtend = false;
 			}
 			AdvanceVerts(vertexType, count, bytesRead);
@@ -1127,6 +1161,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 				canExtend = false;  // TODO: Might support extending between some vertex types in the future.
 				vertexType = data;
 				vertTypeID = GetVertTypeID(vertexType, gstate.getUVGenMode(), g_Config.bSoftwareSkinning);
+				decoder = drawEngineCommon_->GetVertexDecoder(vertTypeID);
 			}
 			break;
 		}
@@ -1233,7 +1268,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 bail:
 	drawEngineCommon_->FlushSkin();
 	gstate.cmdmem[GE_CMD_VERTEXTYPE] = vertexType;
-	int cmdCount = src - start;
+	const int cmdCount = src - start;
 	// Skip over the commands we just read out manually.
 	if (cmdCount > 0) {
 		UpdatePC(currentList->pc, currentList->pc + cmdCount * 4);
@@ -1241,7 +1276,7 @@ bail:
 		// flush back cull mode
 		if (cullMode != gstate.getCullMode()) {
 			// We rewrote everything to the old cull mode, so flush first.
-			drawEngineCommon_->DispatchFlush();
+			drawEngineCommon_->Flush();
 
 			// Now update things for next time.
 			gstate.cmdmem[GE_CMD_CULL] ^= 1;
@@ -1259,7 +1294,11 @@ void GPUCommonHW::Execute_Bezier(u32 op, u32 diff) {
 	gstate_c.framebufFormat = gstate.FrameBufFormat();
 
 	// This also make skipping drawing very effective.
-	VirtualFramebuffer *vfb = framebufferManager_->SetRenderFrameBuffer(gstate_c.IsDirty(DIRTY_FRAMEBUF), gstate_c.skipDrawReason);
+	bool changed;
+	VirtualFramebuffer *vfb = framebufferManager_->SetRenderFrameBuffer(gstate_c.IsDirty(DIRTY_FRAMEBUF), gstate_c.skipDrawReason, &changed);
+	if (changed) {
+		drawEngineCommon_->FlushQueuedDepth();
+	}
 	if (gstate_c.skipDrawReason & (SKIPDRAW_SKIPFRAME | SKIPDRAW_NON_DISPLAYED_FB)) {
 		// TODO: Should this eat some cycles?  Probably yes.  Not sure if important.
 		return;
@@ -1268,7 +1307,7 @@ void GPUCommonHW::Execute_Bezier(u32 op, u32 diff) {
 	CheckDepthUsage(vfb);
 
 	if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-		ERROR_LOG_REPORT(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
+		ERROR_LOG(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
 		return;
 	}
 
@@ -1276,7 +1315,7 @@ void GPUCommonHW::Execute_Bezier(u32 op, u32 diff) {
 	const void *indices = NULL;
 	if ((gstate.vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-			ERROR_LOG_REPORT(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
+			ERROR_LOG(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
 			return;
 		}
 		indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
@@ -1288,7 +1327,7 @@ void GPUCommonHW::Execute_Bezier(u32 op, u32 diff) {
 
 	// Can't flush after setting gstate_c.submitType below since it'll be a mess - it must be done already.
 	if (flushOnParams_)
-		drawEngineCommon_->DispatchFlush();
+		drawEngineCommon_->Flush();
 
 	Spline::BezierSurface surface;
 	surface.tess_u = gstate.getPatchDivisionU();
@@ -1322,7 +1361,7 @@ void GPUCommonHW::Execute_Bezier(u32 op, u32 diff) {
 	gstate_c.submitType = SubmitType::DRAW;
 
 	// After drawing, we advance pointers - see SubmitPrim which does the same.
-	int count = surface.num_points_u * surface.num_points_v;
+	const int count = surface.num_points_u * surface.num_points_v;
 	AdvanceVerts(gstate.vertType, count, bytesRead);
 }
 
@@ -1331,7 +1370,11 @@ void GPUCommonHW::Execute_Spline(u32 op, u32 diff) {
 	gstate_c.framebufFormat = gstate.FrameBufFormat();
 
 	// This also make skipping drawing very effective.
-	VirtualFramebuffer *vfb = framebufferManager_->SetRenderFrameBuffer(gstate_c.IsDirty(DIRTY_FRAMEBUF), gstate_c.skipDrawReason);
+	bool changed;
+	VirtualFramebuffer *vfb = framebufferManager_->SetRenderFrameBuffer(gstate_c.IsDirty(DIRTY_FRAMEBUF), gstate_c.skipDrawReason, &changed);
+	if (changed) {
+		drawEngineCommon_->FlushQueuedDepth();
+	}
 	if (gstate_c.skipDrawReason & (SKIPDRAW_SKIPFRAME | SKIPDRAW_NON_DISPLAYED_FB)) {
 		// TODO: Should this eat some cycles?  Probably yes.  Not sure if important.
 		return;
@@ -1340,7 +1383,7 @@ void GPUCommonHW::Execute_Spline(u32 op, u32 diff) {
 	CheckDepthUsage(vfb);
 
 	if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-		ERROR_LOG_REPORT(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
+		ERROR_LOG(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
 		return;
 	}
 
@@ -1348,19 +1391,19 @@ void GPUCommonHW::Execute_Spline(u32 op, u32 diff) {
 	const void *indices = NULL;
 	if ((gstate.vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-			ERROR_LOG_REPORT(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
+			ERROR_LOG(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
 			return;
 		}
 		indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
 	}
 
 	if (vertTypeIsSkinningEnabled(gstate.vertType)) {
-		DEBUG_LOG_REPORT(Log::G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", gstate.vertType, (gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(gstate.vertType));
+		WARN_LOG_ONCE(unusualcurve, Log::G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", gstate.vertType, (gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(gstate.vertType));
 	}
 
 	// Can't flush after setting gstate_c.submitType below since it'll be a mess - it must be done already.
 	if (flushOnParams_)
-		drawEngineCommon_->DispatchFlush();
+		drawEngineCommon_->Flush();
 
 	Spline::SplineSurface surface;
 	surface.tess_u = gstate.getPatchDivisionU();
@@ -1401,6 +1444,7 @@ void GPUCommonHW::Execute_Spline(u32 op, u32 diff) {
 }
 
 void GPUCommonHW::Execute_BlockTransferStart(u32 op, u32 diff) {
+	drawEngineCommon_->FlushQueuedDepth();
 	Flush();
 
 	PROFILE_THIS_SCOPE("block");  // don't include the flush in the profile, would be misleading.
@@ -1445,7 +1489,7 @@ void GPUCommonHW::Execute_TexLevel(u32 op, u32 diff) {
 
 void GPUCommonHW::Execute_LoadClut(u32 op, u32 diff) {
 	gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
-	textureCache_->LoadClut(gstate.getClutAddress(), gstate.getClutLoadBytes());
+	textureCache_->LoadClut(gstate.getClutAddress(), gstate.getClutLoadBytes(), &recorder_);
 }
 
 
@@ -1734,7 +1778,7 @@ void GPUCommonHW::Execute_BoneMtxData(u32 op, u32 diff) {
 			gstate_c.Dirty(DIRTY_BONEMATRIX0 << (num / 12));
 		} else {
 			gstate_c.deferredVertTypeDirty |= DIRTY_BONEMATRIX0 << (num / 12);
-		}
+		} 
 		((u32 *)gstate.boneMatrix)[num] = newVal;
 	}
 	num++;
@@ -1749,19 +1793,31 @@ void GPUCommonHW::Execute_TexFlush(u32 op, u32 diff) {
 	framebufferManager_->DiscardFramebufferCopy();
 }
 
+u32 GPUCommonHW::DrawSync(int mode) {
+	drawEngineCommon_->FlushQueuedDepth();
+	return GPUCommon::DrawSync(mode);
+}
+
+int GPUCommonHW::ListSync(int listid, int mode) {
+	drawEngineCommon_->FlushQueuedDepth();
+	return GPUCommon::ListSync(listid, mode);
+}
+
 size_t GPUCommonHW::FormatGPUStatsCommon(char *buffer, size_t size) {
 	float vertexAverageCycles = gpuStats.numVertsSubmitted > 0 ? (float)gpuStats.vertexGPUCycles / (float)gpuStats.numVertsSubmitted : 0.0f;
 	return snprintf(buffer, size,
 		"DL processing time: %0.2f ms, %d drawsync, %d listsync\n"
 		"Draw: %d (%d dec, %d culled), flushes %d, clears %d, bbox jumps %d (%d updates)\n"
 		"Vertices: %d dec: %d drawn: %d\n"
-		"FBOs active: %d (evaluations: %d)\n"
+		"FBOs active: %d (evaluations: %d, created %d)\n"
 		"Textures: %d, dec: %d, invalidated: %d, hashed: %d kB, clut %d\n"
 		"readbacks %d (%d non-block), upload %d (cached %d), depal %d\n"
 		"block transfers: %d\n"
 		"replacer: tracks %d references, %d unique textures\n"
 		"Cpy: depth %d, color %d, reint %d, blend %d, self %d\n"
-		"GPU cycles: %d (%0.1f per vertex)\n%s",
+		"GPU cycles: %d (%0.1f per vertex)\n"
+		"Z-rast: %0.2f+%0.2f+%0.2f (total %0.2f/%0.2f) ms\n"
+		"Z-rast: %d prim, %d nopix, %d small, %d earlysize, %d zcull, %d box\n%s",
 		gpuStats.msProcessingDisplayLists * 1000.0f,
 		gpuStats.numDrawSyncs,
 		gpuStats.numListSyncs,
@@ -1777,6 +1833,7 @@ size_t GPUCommonHW::FormatGPUStatsCommon(char *buffer, size_t size) {
 		gpuStats.numUncachedVertsDrawn,
 		(int)framebufferManager_->NumVFBs(),
 		gpuStats.numFramebufferEvaluations,
+		gpuStats.numFBOsCreated,
 		(int)textureCache_->NumLoadedTextures(),
 		gpuStats.numTexturesDecoded,
 		gpuStats.numTextureInvalidations,
@@ -1797,6 +1854,17 @@ size_t GPUCommonHW::FormatGPUStatsCommon(char *buffer, size_t size) {
 		gpuStats.numCopiesForSelfTex,
 		gpuStats.vertexGPUCycles + gpuStats.otherGPUCycles,
 		vertexAverageCycles,
+		gpuStats.msPrepareDepth * 1000.0,
+		gpuStats.msCullDepth * 1000.0,
+		gpuStats.msRasterizeDepth * 1000.0,
+		(gpuStats.msPrepareDepth + gpuStats.msCullDepth + gpuStats.msRasterizeDepth) * 1000.0,
+		gpuStats.msRasterTimeAvailable * 1000.0,
+		gpuStats.numDepthRasterPrims,
+		gpuStats.numDepthRasterNoPixels,
+		gpuStats.numDepthRasterTooSmall,
+		gpuStats.numDepthRasterEarlySize,
+		gpuStats.numDepthRasterZCulled,
+		gpuStats.numDepthEarlyBoxCulled,
 		debugRecording_ ? "(debug-recording)" : ""
 	);
 }

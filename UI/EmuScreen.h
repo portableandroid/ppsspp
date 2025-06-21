@@ -29,6 +29,8 @@
 #include "Core/KeyMap.h"
 #include "Core/ControlMapper.h"
 
+#include "UI/ImDebugger/ImDebugger.h"
+
 struct AxisInput;
 
 class AsyncImageFileView;
@@ -56,6 +58,14 @@ public:
 
 	// We also need to do some special handling of queued UI events to handle closing the chat window.
 	bool key(const KeyInput &key) override;
+	void touch(const TouchInput &key) override;
+
+	void deviceLost() override;
+	void deviceRestored(Draw::DrawContext *draw) override;
+
+	void SendImDebuggerCommand(const ImCommand &command) {
+		imCmd_ = command;
+	}
 
 protected:
 	void darken();
@@ -64,31 +74,32 @@ protected:
 private:
 	void CreateViews() override;
 	UI::EventReturn OnDevTools(UI::EventParams &params);
-	UI::EventReturn OnDisableCardboard(UI::EventParams &params);
 	UI::EventReturn OnChat(UI::EventParams &params);
-	UI::EventReturn OnResume(UI::EventParams &params);
 
-	void bootGame(const Path &filename);
+	void HandleFlip();
+	void ProcessGameBoot(const Path &filename);
 	bool bootAllowStorage(const Path &filename);
 	void bootComplete();
 	bool hasVisibleUI();
 	void renderUI();
+	void runImDebugger();
+	void renderImDebugger();
 
-	void onVKey(int virtualKeyCode, bool down);
-	void onVKeyAnalog(int virtualKeyCode, float value);
+	void onVKey(VirtKey virtualKeyCode, bool down);
+	void onVKeyAnalog(VirtKey virtualKeyCode, float value);
 
-	void autoLoad();
+	void AutoLoadSaveState();
 	bool checkPowerDown();
+
+	void ProcessQueuedVKeys();
+	void ProcessVKey(VirtKey vkey);
 
 	UI::Event OnDevMenu;
 	UI::Event OnChatMenu;
 	bool bootPending_ = true;
 	Path gamePath_;
 
-	// Something invalid was loaded, don't try to emulate
-	bool invalid_ = true;
 	bool quit_ = false;
-	bool stopRender_ = false;
 	std::string errorMessage_;
 
 	// If set, pauses at the end of the frame.
@@ -110,7 +121,6 @@ private:
 	UI::CallbackColorTween *loadingViewColor_ = nullptr;
 	UI::VisibilityTween *loadingViewVisible_ = nullptr;
 	UI::Spinner *loadingSpinner_ = nullptr;
-	UI::TextView *loadingTextView_ = nullptr;
 	UI::Button *resumeButton_ = nullptr;
 	UI::Button *resetButton_ = nullptr;
 	UI::Button *backButton_ = nullptr;
@@ -121,7 +131,32 @@ private:
 
 	std::string extraAssertInfoStr_;
 
-	std::atomic<bool> doFrameAdvance_{};
-
 	ControlMapper controlMapper_;
+
+	std::unique_ptr<ImDebugger> imDebugger_ = nullptr;
+	ImCommand imCmd_{};  // needed to buffer commands in case imgui wasn't created yet.
+
+	bool imguiInited_ = false;
+	// For ImGui modifier tracking
+	bool keyCtrlLeft_ = false;
+	bool keyCtrlRight_ = false;
+	bool keyShiftLeft_ = false;
+	bool keyShiftRight_ = false;
+	bool keyAltLeft_ = false;
+	bool keyAltRight_ = false;
+
+	bool lastImguiEnabled_ = false;
+
+	std::vector<VirtKey> queuedVirtKeys_;
+
+	ImGuiContext *ctx_ = nullptr;
+
+	bool frameStep_ = false;
+#ifndef MOBILE_DEVICE
+	bool startDumping_ = false;
+#endif
+	bool autoLoadFailed_ = false;  // to prevent repeat reloads
 };
+
+bool MustRunBehind();
+bool ShouldRunBehind();

@@ -17,10 +17,10 @@
 
 #include <mutex>
 #include <condition_variable>
+
 #include "Common/Thread/ThreadUtil.h"
 #include "Core/Debugger/WebSocket.h"
 #include "Core/Debugger/WebSocket/WebSocketUtils.h"
-#include "Core/MemMap.h"
 
 // This WebSocket (connected through the same port as disc sharing) allows API/debugger access to PPSSPP.
 // Currently, the only subprotocol "debugger.ppsspp.org" uses a simple JSON based interface.
@@ -99,10 +99,6 @@ static void UpdateConnected(int delta) {
 }
 
 static void WebSocketNotifyLifecycle(CoreLifecycle stage) {
-	// We'll likely already be locked during the reboot.
-	if (PSP_IsRebooting())
-		return;
-
 	switch (stage) {
 	case CoreLifecycle::STARTING:
 	case CoreLifecycle::STOPPING:

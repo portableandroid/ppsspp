@@ -1,5 +1,6 @@
 #include "ppsspp_config.h"
-#include <algorithm>
+
+#include <algorithm>  // for std::search
 #include <cctype>
 #include <cstring>
 
@@ -161,7 +162,7 @@ std::string Path::GetFilename() const {
 	return path_;
 }
 
-std::string GetExtFromString(std::string_view str) {
+static std::string GetExtFromString(std::string_view str) {
 	size_t pos = str.rfind(".");
 	if (pos == std::string::npos) {
 		return "";
@@ -248,6 +249,27 @@ bool Path::StartsWith(const Path &other) const {
 		return false;
 	}
 	return startsWith(path_, other.path_);
+}
+
+bool Path::StartsWithGlobalAndNotEqual(const Path &other) const {
+	if (other.empty()) {
+		return true;
+	}
+	if (type_ != other.type_) {
+		// Bad
+		return false;
+	}
+	if (type_ == PathType::CONTENT_URI) {
+		AndroidContentURI a(path_);
+		AndroidContentURI b(other.path_);
+		std::string aLast = a.GetLastPart();
+		std::string bLast = b.GetLastPart();
+		if (aLast == bLast) {
+			return false;
+		}
+		return CountChar(aLast, '/') != CountChar(bLast, '/') && startsWith(aLast, bLast);
+	}
+	return *this != other && StartsWith(other);
 }
 
 const std::string &Path::ToString() const {
@@ -424,9 +446,12 @@ bool Path::ComputePathTo(const Path &other, std::string &path) const {
 	}
 }
 
-#if HOST_IS_CASE_SENSITIVE
-
 static bool FixFilenameCase(const std::string &path, std::string &filename) {
+#if _WIN32
+	// We don't support case-insensitive file systems on Windows.
+	return true;
+#else
+
 	// Are we lucky?
 	if (File::Exists(Path(path + filename)))
 		return true;
@@ -468,9 +493,14 @@ static bool FixFilenameCase(const std::string &path, std::string &filename) {
 	closedir(dirp);
 
 	return retValue;
+#endif
 }
 
 bool FixPathCase(const Path &realBasePath, std::string &path, FixPathCaseBehavior behavior) {
+#if _WIN32
+	return true;
+#else
+
 	if (realBasePath.Type() == PathType::CONTENT_URI) {
 		// Nothing to do. These are already case insensitive, I think.
 		return true;
@@ -523,6 +553,5 @@ bool FixPathCase(const Path &realBasePath, std::string &path, FixPathCaseBehavio
 	}
 
 	return true;
-}
-
 #endif
+}

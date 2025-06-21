@@ -11,12 +11,12 @@
 #include "Common/GPU/thin3d_create.h"
 
 #include "Common/Common.h"
+#include "Common/Audio/AudioBackend.h"
 #include "Common/Input/InputState.h"
 #include "Common/File/VFS/VFS.h"
 #include "Common/Thread/ThreadUtil.h"
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/DirectXHelper.h"
-#include "Common/File/FileUtil.h"
 #include "Common/Log.h"
 #include "Common/Log/LogManager.h"
 #include "Common/TimeUtil.h"
@@ -51,8 +51,6 @@ using namespace Windows::ApplicationModel::DataTransfer;
 using namespace Windows::Devices::Enumeration;
 using namespace Concurrency;
 
-// UGLY!
-extern WindowsAudioBackend *winAudioBackend;
 std::list<std::unique_ptr<InputDevice>> g_input;
 
 // TODO: Use Microsoft::WRL::ComPtr<> for D3D11 objects?
@@ -72,10 +70,10 @@ PPSSPP_UWPMain::PPSSPP_UWPMain(App ^app, const std::shared_ptr<DX::DeviceResourc
 	ctx_.reset(new UWPGraphicsContext(deviceResources));
 
 #if _DEBUG
-		LogManager::GetInstance()->SetAllLogLevels(LogLevel::LDEBUG);
+		g_logManager.SetAllLogLevels(LogLevel::LDEBUG);
 
 		if (g_Config.bEnableLogging) {
-			LogManager::GetInstance()->ChangeFileLog(GetLogFile().c_str());
+			g_logManager.SetFileLogPath(Path(GetLogFile()));
 		}
 #endif
 
@@ -143,18 +141,23 @@ void PPSSPP_UWPMain::UpdateScreenState() {
 
 	if (g_display.rotation == DisplayRotation::ROTATE_90 || g_display.rotation == DisplayRotation::ROTATE_270) {
 		// We need to swap our width/height.
+		// TODO: This is most likely dead code, since we no longer support Windows Phone.
 		std::swap(g_display.pixel_xres, g_display.pixel_yres);
 	}
 
-	g_display.dpi = m_deviceResources->GetActualDpi();
+	// TODO: The below stuff is probably completely redundant since the UWP app elsewhere calls Native_UpdateScreenScale.
 
+	float dpi = m_deviceResources->GetActualDpi();
 	if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_MOBILE) {
 		// Boost DPI a bit to look better.
-		g_display.dpi *= 96.0f / 136.0f;
+		dpi *= 96.0f / 136.0f;
 	}
-	g_display.dpi_scale_x = 96.0f / g_display.dpi;
-	g_display.dpi_scale_y = 96.0f / g_display.dpi;
 
+	g_display.dpi_scale_real_x = 96.0f / dpi;
+	g_display.dpi_scale_real_y = 96.0f / dpi;
+
+	g_display.dpi_scale_x = g_display.dpi_scale_real_x;
+	g_display.dpi_scale_y = g_display.dpi_scale_real_y;
 	g_display.pixel_in_dps_x = 1.0f / g_display.dpi_scale_x;
 	g_display.pixel_in_dps_y = 1.0f / g_display.dpi_scale_y;
 
@@ -169,7 +172,7 @@ void PPSSPP_UWPMain::UpdateScreenState() {
 bool PPSSPP_UWPMain::Render() {
 	static bool hasSetThreadName = false;
 	if (!hasSetThreadName) {
-		SetCurrentThreadName("UWPRenderThread");
+		SetCurrentThreadName("EmuThread");
 		hasSetThreadName = true;
 	}
 
@@ -357,10 +360,12 @@ std::vector<std::string> System_GetPropertyStringVec(SystemProperty prop) {
 	}
 }
 
+extern AudioBackend *g_audioBackend;
+
 int64_t System_GetPropertyInt(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_AUDIO_SAMPLE_RATE:
-		return winAudioBackend ? winAudioBackend->GetSampleRate() : -1;
+		return g_audioBackend ? g_audioBackend->SampleRate() : -1;
 
 	case SYSPROP_DEVICE_TYPE:
 	{
@@ -434,7 +439,7 @@ bool System_GetPropertyBool(SystemProperty prop) {
 		return true;
 	case SYSPROP_HAS_KEYBOARD:
 	{
-		// Do actual check 
+		// Do actual check
 		// touch devices has input pane, we need to depend on it
 		// I don't know any possible way to display input dialog in non-xaml apps
 		return isKeyboardAvailable() || isTouchAvailable();
@@ -514,11 +519,20 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		case BrowseFileType::ZIP:
 			supportedExtensions = { ".zip" };
 			break;
+		case BrowseFileType::SYMBOL_MAP:
+			supportedExtensions = { ".ppmap" };
+			break;
+		case BrowseFileType::SYMBOL_MAP_NOCASH:
+			supportedExtensions = { ".sym" };
+			break;
 		case BrowseFileType::DB:
 			supportedExtensions = { ".db" };
 			break;
 		case BrowseFileType::SOUND_EFFECT:
 			supportedExtensions = { ".wav", ".mp3" };
+			break;
+		case BrowseFileType::ATRAC3:
+			supportedExtensions = { ".at3" };
 			break;
 		case BrowseFileType::ANY:
 			// 'ChooseFile' will added '*' by default when there are no extensions assigned

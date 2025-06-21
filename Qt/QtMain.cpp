@@ -33,6 +33,7 @@
 #include "SDL_keyboard.h"
 #endif
 
+#include "Common/Audio/AudioBackend.h"
 #include "Common/System/NativeApp.h"
 #include "Common/System/Request.h"
 #include "Common/GPU/OpenGL/GLFeatures.h"
@@ -46,6 +47,7 @@
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/StringUtils.h"
 #include "Common/TimeUtil.h"
+#include "Common/Log/LogManager.h"
 
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
@@ -77,7 +79,7 @@ SDL_AudioSpec g_retFmt;
 static SDL_AudioDeviceID audioDev = 0;
 
 extern void mixaudio(void *userdata, Uint8 *stream, int len) {
-	NativeMix((short *)stream, len / 4, AUDIO_FREQ);
+	NativeMix((short *)stream, len / 4, AUDIO_FREQ, userdata);
 }
 
 static void InitSDLAudioDevice() {
@@ -86,7 +88,7 @@ static void InitSDLAudioDevice() {
 	fmt.freq = 44100;
 	fmt.format = AUDIO_S16;
 	fmt.channels = 2;
-	fmt.samples = 256;
+	fmt.samples = std::max(g_Config.iSDLAudioBufferSize, 128);
 	fmt.callback = &mixaudio;
 	fmt.userdata = nullptr;
 
@@ -325,6 +327,9 @@ bool MainUI::HandleCustomEvent(QEvent *e) {
 		case BrowseFileType::ZIP:
 			filter = "ZIP files (*.zip)";
 			break;
+		case BrowseFileType::ATRAC3:
+			filter = "AT3 files (*.at3)";
+			break;
 		case BrowseFileType::ANY:
 			break;
 		}
@@ -440,6 +445,11 @@ void System_LaunchUrl(LaunchUrlType urlType, const char *url)
 	QDesktopServices::openUrl(QUrl(url));
 }
 
+AudioBackend *System_CreateAudioBackend() {
+	// Use legacy mechanisms.
+	return nullptr;
+}
+
 static int mainInternal(QApplication &a) {
 #ifdef MOBILE_DEVICE
 	emugl = new MainUI();
@@ -473,7 +483,7 @@ static int mainInternal(QApplication &a) {
 }
 
 void MainUI::EmuThreadFunc() {
-	SetCurrentThreadName("Emu");
+	SetCurrentThreadName("EmuThread");
 
 	// There's no real requirement that NativeInit happen on this thread, though it can't hurt...
 	// We just call the update/render loop here. NativeInitGraphics should be here though.
@@ -482,7 +492,7 @@ void MainUI::EmuThreadFunc() {
 	emuThreadState = (int)EmuThreadState::RUNNING;
 	while (emuThreadState != (int)EmuThreadState::QUIT_REQUESTED) {
 		updateAccelerometer();
-		UpdateRunLoop(graphicsContext);
+		NativeFrame(graphicsContext);
 	}
 	emuThreadState = (int)EmuThreadState::STOPPED;
 
@@ -548,7 +558,7 @@ QString MainUI::InputBoxGetQString(QString title, QString defaultValue) {
 }
 
 void MainUI::resizeGL(int w, int h) {
-	if (UpdateScreenScale(w, h)) {
+	if (Native_UpdateScreenScale(w, h, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor))) {
 		System_PostUIMessage(UIMessage::GPU_RENDER_RESIZED);
 	}
 	xscale = w / this->width();
@@ -566,7 +576,7 @@ void MainUI::timerEvent(QTimerEvent *) {
 void MainUI::changeEvent(QEvent *e) {
 	QGLWidget::changeEvent(e);
 	if (e->type() == QEvent::WindowStateChange)
-		Core_NotifyWindowHidden(isMinimized());
+		Native_NotifyWindowHidden(isMinimized());
 }
 
 bool MainUI::event(QEvent *e) {
@@ -612,7 +622,7 @@ bool MainUI::event(QEvent *e) {
 		case Qt::LeftButton:
 			input.x = ((QMouseEvent*)e)->pos().x() * g_display.dpi_scale_x * xscale;
 			input.y = ((QMouseEvent*)e)->pos().y() * g_display.dpi_scale_y * yscale;
-			input.flags = (e->type() == QEvent::MouseButtonPress) ? TOUCH_DOWN : TOUCH_UP;
+			input.flags = ((e->type() == QEvent::MouseButtonPress) ? TOUCH_DOWN : TOUCH_UP) | TOUCH_MOUSE;
 			input.id = 0;
 			NativeTouch(input);
 			break;
@@ -635,7 +645,7 @@ bool MainUI::event(QEvent *e) {
 	case QEvent::MouseMove:
 		input.x = ((QMouseEvent*)e)->pos().x() * g_display.dpi_scale_x * xscale;
 		input.y = ((QMouseEvent*)e)->pos().y() * g_display.dpi_scale_y * yscale;
-		input.flags = TOUCH_MOVE;
+		input.flags = TOUCH_MOVE | TOUCH_MOUSE;
 		input.id = 0;
 		NativeTouch(input);
 		break;
@@ -726,7 +736,7 @@ void MainUI::paintGL() {
 #endif
 	updateAccelerometer();
 	if (emuThreadState == (int)EmuThreadState::DISABLED) {
-		UpdateRunLoop(graphicsContext);
+		NativeFrame(graphicsContext);
 	} else {
 		graphicsContext->ThreadFrame();
 		// Do the rest in EmuThreadFunc
@@ -782,9 +792,8 @@ void MainAudio::run() {
 
 void MainAudio::timerEvent(QTimerEvent *) {
 	memset(mixbuf, 0, mixlen);
-	size_t frames = NativeMix((short *)mixbuf, AUDIO_BUFFERS*AUDIO_SAMPLES, AUDIO_FREQ);
-	if (frames > 0)
-		feed->write(mixbuf, sizeof(short) * AUDIO_CHANNELS * frames);
+	NativeMix((short *)mixbuf, AUDIO_BUFFERS * AUDIO_SAMPLES, AUDIO_FREQ);
+	feed->write(mixbuf, sizeof(short) * AUDIO_CHANNELS * frames);
 }
 
 #endif
@@ -804,6 +813,8 @@ Q_DECL_EXPORT
 int main(int argc, char *argv[])
 {
 	TimeInit();
+
+	g_logManager.EnableOutput(LogOutput::Stdio);
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--version")) {
@@ -836,15 +847,11 @@ int main(int argc, char *argv[])
 
 	if (res.width() < res.height())
 		res.transpose();
-	g_display.pixel_xres = res.width();
-	g_display.pixel_yres = res.height();
 
-	g_display.dpi_scale_x = screen->logicalDotsPerInchX() / screen->physicalDotsPerInchX();
-	g_display.dpi_scale_y = screen->logicalDotsPerInchY() / screen->physicalDotsPerInchY();
-	g_display.dpi_scale_real_x = g_display.dpi_scale_x;
-	g_display.dpi_scale_real_y = g_display.dpi_scale_y;
-	g_display.dp_xres = (int)(g_display.pixel_xres * g_display.dpi_scale_x);
-	g_display.dp_yres = (int)(g_display.pixel_yres * g_display.dpi_scale_y);
+	// We assume physicalDotsPerInchY is the same as PerInchX.
+	float dpi_scale_x = screen->logicalDotsPerInchX() / screen->physicalDotsPerInchX();
+	float dpi_scale_y = screen->logicalDotsPerInchY() / screen->physicalDotsPerInchY();
+	g_display.Recalculate(res.width(), res.height(), dpi_scale_x, dpi_scale_y, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 
 	refreshRate = screen->refreshRate();
 

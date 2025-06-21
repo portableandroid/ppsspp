@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <cstring>
 #include <set>
 
@@ -130,7 +129,7 @@ void PathBrowser::SetPath(const Path &path) {
 }
 
 void PathBrowser::RestrictToRoot(const Path &root) {
-	INFO_LOG(Log::System, "Restricting to root: %s", root.c_str());
+	VERBOSE_LOG(Log::IO, "Restricting to root: %s", root.c_str());
 	restrictedRoot_ = root;
 }
 
@@ -230,22 +229,22 @@ std::string PathBrowser::GetFriendlyPath() const {
 	return path_.ToVisualString();
 }
 
-bool PathBrowser::GetListing(std::vector<File::FileInfo> &fileInfo, const char *filter, bool *cancel) {
+bool PathBrowser::GetListing(std::vector<File::FileInfo> &fileInfo, const char *extensionFilter, bool *cancel) {
 	std::unique_lock<std::mutex> guard(pendingLock_);
 	while (!IsListingReady() && (!cancel || !*cancel)) {
 		// In case cancel changes, just sleep. TODO: Replace with condition variable.
 		guard.unlock();
-		sleep_ms(50);
+		sleep_ms(50, "pathbrowser-poll");
 		guard.lock();
 	}
 
-	fileInfo = ApplyFilter(pendingFiles_, filter);
+	fileInfo = ApplyFilter(pendingFiles_, extensionFilter, "");
 	return true;
 }
 
 void PathBrowser::ApplyRestriction() {
 	if (!path_.StartsWith(restrictedRoot_) && !startsWith(path_.ToString(), "!")) {
-		WARN_LOG(Log::System, "Applying path restriction: %s (%s didn't match)", restrictedRoot_.c_str(), path_.c_str());
+		WARN_LOG(Log::IO, "Applying path restriction: %s (%s didn't match)", restrictedRoot_.c_str(), path_.c_str());
 		path_ = restrictedRoot_;
 	}
 }
